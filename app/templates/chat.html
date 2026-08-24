@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}与 {{ profile.display_name }} 对话{% endblock %}
+{% block body %}
+  <main class="chat-app" data-model-name="{{ model_name }}">
+    <aside class="chat-profile">
+      <div class="profile-avatar">{{ profile.display_name[:1] }}</div>
+      <p class="eyebrow">REAL HUMAN · API ACCESSIBLE</p>
+      <h1>{{ profile.display_name }}</h1>
+      <p class="profile-bio">{{ profile.bio }}</p>
+      <p class="availability"><span></span>{{ profile.availability }}</p>
+      <div class="skill-list">
+        {% for skill in profile.skills %}<span>{{ skill }}</span>{% endfor %}
+      </div>
+      <div class="human-disclosure">正常回答由真人阅读上下文后亲自输入；自动规则和超时兜底会明确说明，不冒充真人。</div>
+    </aside>
+
+    <section class="chat-panel">
+      <header class="chat-header">
+        <div>
+          <p class="eyebrow">CONVERSATION</p>
+          <h2 id="conversation-title">新对话</h2>
+        </div>
+        <div class="chat-actions">
+          <span class="connection-status" id="connection-status"><i></i> 已连接</span>
+          <button type="button" class="button-secondary" id="new-chat-button">新对话</button>
+        </div>
+      </header>
+
+      <div class="chat-messages" id="chat-messages" aria-live="polite">
+        <div class="welcome-message" id="welcome-message">
+          <p>你正在直接和 {{ profile.display_name }} 对话。</p>
+          <span>可以连续追问，也可以发送图片。上下文会保留在这个会话中。</span>
+        </div>
+      </div>
+
+      <div class="upload-preview" id="upload-preview" hidden></div>
+      <div class="waiting-bar" id="waiting-bar" hidden>
+        <span class="typing-dots"><i></i><i></i><i></i></span>
+        <span id="waiting-copy">真人正在阅读并思考；最多等 {{ response_timeout_label }}，超时会自动说明情况</span>
+      </div>
+      <div class="chat-error" id="chat-error" hidden></div>
+
+      <form class="composer" id="chat-form">
+        <label class="image-button" title="添加图片">
+          <input type="file" id="image-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
+          <span>＋</span>
+        </label>
+        <textarea id="message-input" rows="1" maxlength="20000" placeholder="写下你真正想问的问题……"></textarea>
+        <button type="submit" id="send-button">发送</button>
+      </form>
+      <p class="composer-note">Enter 发送 · Shift + Enter 换行 · 最多 4 张图片</p>
+    </section>
+  </main>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/chat.js') }}?v=20260824a" defer></script>
+{% endblock %}

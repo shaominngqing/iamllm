@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}模型设置 · iamllm{% endblock %}
+{% block body %}
+  <header class="topbar compact">
+    <a href="/admin" class="back-link">← 返回回答后台</a>
+    <code>{{ model_name }}</code>
+  </header>
+  <main class="settings-layout">
+    <section class="settings-intro">
+      <p class="eyebrow">MODEL PROFILE</p>
+      <h1>让别人知道<br>你是谁、会什么</h1>
+      <p class="muted">这些资料会显示在聊天页和模型详情接口中。技能是你愿意公开接受的任务范围，不是自动执行的软件插件。</p>
+    </section>
+    <section class="settings-card">
+      {% if saved %}<div class="success-alert">设置已保存，聊天页会立即使用新资料。</div>{% endif %}
+      {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/admin/settings" class="stack-form">
+        <label>
+          展示名称
+          <input name="display_name" maxlength="80" value="{{ profile.display_name }}" required>
+        </label>
+        <label>
+          个人简介
+          <textarea name="bio" rows="5" maxlength="2000" required>{{ profile.bio }}</textarea>
+        </label>
+        <label>
+          在线状态说明
+          <input name="availability" maxlength="200" value="{{ profile.availability }}">
+        </label>
+        <label>
+          技能列表（每行一个）
+          <textarea name="skills" rows="9" maxlength="3200">{{ profile.skills | join('\n') }}</textarea>
+        </label>
+        <button type="submit">保存模型资料</button>
+      </form>
+    </section>
+  </main>
+{% endblock %}
+

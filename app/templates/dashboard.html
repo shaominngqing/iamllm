@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}人类模型控制台 · iamllm{% endblock %}
+{% block body_class %}admin-body{% endblock %}
+{% block shell_class %}admin-root{% endblock %}
+{% block body %}
+<div class="admin-console" data-model-name="{{ model_name }}">
+  <aside class="admin-sidebar">
+    <div class="console-brand">
+      <span class="brand-orbit">I</span>
+      <div><strong>iamllm</strong><small>人类模型控制台</small></div>
+    </div>
+
+    <nav class="console-nav" aria-label="控制台导航">
+      <button type="button" data-section="cockpit" class="active"><span>◫</span><b>驾驶舱</b></button>
+      <button type="button" data-section="inbox"><span>↳</span><b>等我回</b><em id="nav-pending">0</em></button>
+      <button type="button" data-section="automation"><span>⚡</span><b>自动挡</b></button>
+      <button type="button" data-section="persona"><span>☺</span><b>人类设定</b></button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <a href="/chat" target="_blank" rel="noreferrer"><span>↗</span> 打开访客聊天页</a>
+      <form method="post" action="/admin/logout"><button type="submit"><span>⌁</span> 退出控制台</button></form>
+    </div>
+  </aside>
+
+  <div class="console-stage">
+    <header class="console-header">
+      <div>
+        <p class="eyebrow" id="section-kicker">HUMAN OPERATIONS</p>
+        <h1 id="section-title">驾驶舱</h1>
+      </div>
+      <div class="console-header-actions">
+        <div class="live-pill" id="live-status"><span></span> 真人神经在线</div>
+        <a class="outline-action" href="/chat" target="_blank" rel="noreferrer">预览聊天页 ↗</a>
+      </div>
+    </header>
+
+    <main class="console-main">
+      <section class="console-section active" data-panel="cockpit">
+        <article class="welcome-banner">
+          <div>
+            <p class="eyebrow">GOOD TO SEE YOU, HUMAN</p>
+            <h2>欢迎回来，<span id="welcome-name">{{ profile.display_name }}</span></h2>
+            <p id="welcome-copy">今天也要努力伪装成一个延迟极高、但偶尔很有灵魂的大模型。</p>
+          </div>
+          <button type="button" class="primary-action" data-go="inbox">去回答问题 <span>→</span></button>
+        </article>
+
+        <div class="metric-grid" aria-label="今日概览">
+          <article class="metric-card metric-warm"><span>正在等你</span><strong id="metric-pending">—</strong><small>个灵魂在排队</small></article>
+          <article class="metric-card"><span>今日亲自回复</span><strong id="metric-answered">—</strong><small>保持人类含量</small></article>
+          <article class="metric-card"><span>自动挡接住</span><strong id="metric-automated">—</strong><small>趁你没看手机</small></article>
+          <article class="metric-card"><span>平均反射弧</span><strong id="metric-latency">—</strong><small>从收到到发出</small></article>
+        </div>
+
+        <div class="cockpit-grid">
+          <article class="dashboard-card status-card">
+            <div class="card-heading"><div><p class="eyebrow">MODEL PULSE</p><h3>本机生命体征</h3></div><span class="status-dot"></span></div>
+            <dl class="model-vitals">
+              <div><dt>模型代号</dt><dd>{{ model_name }}</dd></div>
+              <div><dt>当前状态</dt><dd id="vital-availability">{{ profile.availability }}</dd></div>
+              <div><dt>已开启自动规则</dt><dd id="vital-rules">0 条</dd></div>
+              <div><dt>新问题通知</dt><dd class="vital-with-action"><span id="vital-notifications">读取中</span><button type="button" id="test-notification" disabled>发送测试</button></dd></div>
+              <div><dt>上下文记忆</dt><dd>按会话完整保留</dd></div>
+              <div><dt>数据落点</dt><dd>数据库与图片持久化</dd></div>
+            </dl>
+          </article>
+          <article class="dashboard-card handoff-card">
+            <div class="card-heading"><div><p class="eyebrow">HUMAN FAILSAFE</p><h3>忙不过来时</h3></div><span>🛟</span></div>
+            <p>先给“在吗”装个自动接待，再准备几句一键话术。你依然是模型，只是终于有了摸鱼基础设施。</p>
+            <div class="fallback-summary">
+              <span>最后兜底</span>
+              <strong>{% if timeout_fallback_enabled %}{{ response_timeout_label }} 后自动解释{% else %}未开启{% endif %}</strong>
+            </div>
+            <div class="inline-actions">
+              <button type="button" class="soft-action" data-go="automation">配置自动挡</button>
+              <button type="button" class="soft-action" data-go="persona">调整人设</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="console-section" data-panel="inbox">
+        <div class="section-toolbar">
+          <div><h2>等我回</h2><p>上下文、图片、工具和回复框都留在这一页。</p></div>
+          <div class="inbox-toolbar-actions">
+            <label class="auto-open-control" title="空闲时有新问题，会自动在右侧打开">
+              <input type="checkbox" id="auto-open-requests" checked>
+              <span><i></i> 空闲自动接单</span>
+            </label>
+            <div class="segmented" id="request-filters">
+              <button type="button" data-filter="pending" class="active">待回答</button>
+              <button type="button" data-filter="answered">已回答</button>
+              <button type="button" data-filter="expired">已过期</button>
+              <button type="button" data-filter="all">全部</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="new-request-notice" id="new-request-notice" hidden>
+          <span>✦</span>
+          <b id="new-request-copy">有新问题进入队列</b>
+          <em>现在查看 →</em>
+        </button>
+        <div class="inbox-workspace">
+          <aside class="inbox-list" id="request-list" aria-label="问题列表">
+            <div class="panel-loading">正在读取人类待办……</div>
+          </aside>
+          <section class="inbox-detail" id="request-detail">
+            <div class="detail-placeholder"><span>↳</span><h3>选一个问题开始</h3><p>放心，没有 token 计费，只有你的耐心在燃烧。</p></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="console-section" data-panel="automation">
+        <div class="section-toolbar">
+          <div><h2>自动挡</h2><p>忙的时候让规则接住场面，不忙的时候继续亲自有灵魂。</p></div>
+          <div class="automation-safety"><span>✓</span> 新建规则默认关闭，先检查再上路</div>
+        </div>
+        <form class="rule-simulator" id="rule-preview-form">
+          <div>
+            <p class="eyebrow">DRY RUN · 绝不发送</p>
+            <h3>规则试运行</h3>
+            <small>输入一句访客可能说的话，看看会不会被自动挡截胡。</small>
+          </div>
+          <div class="rule-simulator-input">
+            <input name="text" maxlength="20000" required placeholder="例如：你是 AI 吗？">
+            <button type="submit" class="soft-action">模拟命中</button>
+          </div>
+          <div class="rule-preview-result" id="rule-preview-result" hidden></div>
+        </form>
+        <div class="automation-grid">
+          <article class="automation-column">
+            <div class="column-heading">
+              <div><p class="eyebrow">CLICK TO INSERT</p><h3>快捷话术</h3><small>点击后填进回复框，不会擅自发送</small></div>
+              <button type="button" class="square-action" id="new-quick" aria-label="新建快捷话术">＋</button>
+            </div>
+            <div id="quick-reply-list" class="automation-list"></div>
+          </article>
+          <article class="automation-column">
+            <div class="column-heading">
+              <div><p class="eyebrow">HANDS-FREE, CAREFULLY</p><h3>自动回复规则</h3><small>关键词优先于时间段，真人抢答会取消自动回复</small></div>
+              <button type="button" class="square-action" id="new-rule" aria-label="新建自动规则">＋</button>
+            </div>
+            <div id="auto-rule-list" class="automation-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="console-section" data-panel="persona">
+        <div class="section-toolbar">
+          <div><h2>人类设定</h2><p>这是访客和 API 看到的模型卡片，也是你公开承认擅长什么的地方。</p></div>
+          <span class="model-chip">{{ model_name }}</span>
+        </div>
+        <form class="persona-layout" id="profile-form">
+          <div class="persona-preview">
+            <div class="preview-avatar" id="preview-avatar">{{ profile.display_name[0] }}</div>
+            <p class="eyebrow">100% HUMAN IN THE LOOP</p>
+            <h3 id="preview-name">{{ profile.display_name }}</h3>
+            <p id="preview-bio">{{ profile.bio }}</p>
+            <div class="availability-line"><span></span><b id="preview-availability">{{ profile.availability }}</b></div>
+            <div class="skill-preview" id="preview-skills"></div>
+          </div>
+          <div class="persona-fields dashboard-card">
+            <label>对外名称<input name="display_name" value="{{ profile.display_name }}" maxlength="80" required></label>
+            <label>一句自我介绍<textarea name="bio" rows="4" maxlength="2000" required>{{ profile.bio }}</textarea></label>
+            <label>在线状态<input name="availability" value="{{ profile.availability }}" maxlength="200" placeholder="例如：工作日晚上偶尔出没"></label>
+            <label>技能标签 <small>每行一个，别写“无所不能”，容易被当场测试。</small><textarea name="skills" rows="7" maxlength="3000">{{ profile.skills | join('\n') }}</textarea></label>
+            <div class="form-footer"><span id="profile-status"></span><button type="submit" class="primary-action">保存人类设定</button></div>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+</div>
+
+<dialog class="console-dialog" id="quick-dialog">
+  <form method="dialog" id="quick-form">
+    <div class="dialog-heading"><div><p class="eyebrow">QUICK REPLY</p><h2 id="quick-dialog-title">新建快捷话术</h2></div><button type="button" data-dialog-close class="dialog-close" aria-label="关闭">×</button></div>
+    <input type="hidden" name="id">
+    <label>话术名称<input name="title" maxlength="80" required placeholder="例如：容我认真想想"></label>
+    <label>分类<input name="category" maxlength="40" required value="常用"></label>
+    <label>回复内容<textarea name="content" rows="6" maxlength="5000" required placeholder="这段文字只会被填入回复框……"></textarea></label>
+    <label class="toggle-row"><span><b>在回复框中显示</b><small>关闭后保留内容，但暂时藏起来</small></span><input type="checkbox" name="active" checked></label>
+    <div class="dialog-actions"><button type="button" data-dialog-close class="soft-action">取消</button><button type="submit" class="primary-action">保存话术</button></div>
+  </form>
+</dialog>
+
+<dialog class="console-dialog" id="rule-dialog">
+  <form method="dialog" id="rule-form">
+    <div class="dialog-heading"><div><p class="eyebrow">AUTO PILOT</p><h2 id="rule-dialog-title">新建自动规则</h2></div><button type="button" data-dialog-close class="dialog-close" aria-label="关闭">×</button></div>
+    <input type="hidden" name="id">
+    <div class="form-two">
+      <label>规则名称<input name="name" maxlength="80" required placeholder="例如：在吗探测器"></label>
+      <label>触发方式<select name="rule_type"><option value="keyword">关键词</option><option value="schedule">时间段</option></select></label>
+    </div>
+    <div id="keyword-rule-fields" class="form-two">
+      <label>匹配方式<select name="match_type"><option value="contains">包含关键词</option><option value="exact">完全相同</option></select></label>
+      <label>关键词<input name="pattern" maxlength="200" placeholder="例如：在吗"></label>
+    </div>
+    <div id="schedule-rule-fields" class="form-two" hidden>
+      <label>开始时间<input name="start_time" type="time" value="00:00"></label>
+      <label>结束时间<input name="end_time" type="time" value="08:30"></label>
+    </div>
+    <label>自动回复内容<textarea name="response_text" rows="5" maxlength="5000" required placeholder="让它像你，但不要比你还会说。"></textarea></label>
+    <div class="form-two">
+      <label>延迟几秒发送<input name="delay_seconds" type="number" min="0" max="86400" value="5"></label>
+      <label>优先级 <small>越大越先匹配</small><input name="priority" type="number" min="-1000" max="1000" value="0"></label>
+    </div>
+    <p class="timezone-note">时间段按 {{ timezone_name }} 时区执行；跨过午夜也支持。</p>
+    <fieldset class="weekday-picker" id="weekday-picker"><legend>生效日期</legend></fieldset>
+    <label class="toggle-row"><span><b>现在启用</b><small>开启后，匹配的新消息会真的收到这条回复</small></span><input type="checkbox" name="active"></label>
+    <div class="dialog-actions"><button type="button" data-dialog-close class="soft-action">取消</button><button type="submit" class="primary-action">保存规则</button></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/admin.js') }}?v=20260824b" defer></script>{% endblock %}

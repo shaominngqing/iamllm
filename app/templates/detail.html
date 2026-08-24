@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}回答问题 · iamllm{% endblock %}
+{% block body %}
+  <header class="topbar compact">
+    <a href="/admin" class="back-link">← 返回实时队列</a>
+    <div class="detail-statuses">
+      {% if pending_count %}<span class="pending-badge">另有 {{ pending_count }} 个待回答</span>{% endif %}
+      <span class="status status-{{ item.status }}">
+        {% if item.status == 'pending' %}待回答{% elif item.status == 'answered' %}已回答{% else %}已过期{% endif %}
+      </span>
+    </div>
+  </header>
+
+  <main class="detail-grid">
+    <section class="conversation">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">FULL CONTEXT</p>
+          <h1>完整对话</h1>
+        </div>
+        <div class="request-origin">
+          <span>{{ '连续对话' if item.conversation_id else '单次请求' }}</span>
+          <span>{{ '同步' if item.mode == 'sync' else '异步' }}</span>
+        </div>
+      </div>
+
+      {% for message in item.messages %}
+        <article class="message message-{{ message.role }}">
+          <p class="message-role">
+            {{ message.role }}
+            {% if message.name %}<span>· {{ message.name }}</span>{% endif %}
+          </p>
+          {% if message.content is string %}
+            <div class="message-content">{{ message.content }}</div>
+          {% elif message.content %}
+            <div class="message-parts">
+              {% for part in message.content %}
+                {% if part.type == 'text' %}
+                  <div class="message-content">{{ part.text }}</div>
+                {% elif part.type == 'image_url' %}
+                  <a href="{{ part.image_url.url }}" target="_blank" rel="noreferrer" class="image-link">
+                    <img src="{{ part.image_url.url }}" alt="对话中上传的图片" loading="lazy">
+                  </a>
+                {% endif %}
+              {% endfor %}
+            </div>
+          {% endif %}
+          {% if message.tool_calls %}
+            {% for tool_call in message.tool_calls %}
+              <div class="tool-call-card">
+                <span>调用工具</span>
+                <strong>{{ tool_call.function.name }}</strong>
+                <pre>{{ tool_call.function.arguments }}</pre>
+              </div>
+            {% endfor %}
+          {% endif %}
+          {% if message.role == 'tool' %}
+            <p class="tool-result-label">工具结果 · {{ message.tool_call_id }}</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+
+      {% if item.tools %}
+        <section class="available-tools">
+          <p class="eyebrow">CALLER TOOLS</p>
+          <h2>调用方允许使用的工具</h2>
+          {% for tool in item.tools %}
+            <details>
+              <summary>{{ tool.function.name }}</summary>
+              {% if tool.function.description %}<p>{{ tool.function.description }}</p>{% endif %}
+              <pre>{{ tool.function.parameters | prettyjson }}</pre>
+            </details>
+          {% endfor %}
+        </section>
+      {% endif %}
+      <code class="request-id">{{ item.id }}</code>
+    </section>
+
+    <aside class="answer-panel">
+      <p class="eyebrow">YOUR RESPONSE</p>
+      <h2>以你的身份回答</h2>
+      <p class="muted answer-hint">调用方会把你的提交原样当作模型输出。</p>
+      {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+      {% if item.status == 'pending' %}
+        <form method="post" action="/admin/requests/{{ item.id }}/answer" class="stack-form" id="answer-form">
+          {% if item.tools %}
+            <fieldset class="response-switch">
+              <legend>回复方式</legend>
+              <label class="radio-option"><input type="radio" name="response_type" value="text" checked> 直接回答</label>
+              <label class="radio-option"><input type="radio" name="response_type" value="tool_call"> 调用工具</label>
+            </fieldset>
+          {% else %}
+            <input type="hidden" name="response_type" value="text">
+          {% endif %}
+
+          <div id="text-response-fields">
+            <label>
+              真人回答
+              <textarea name="answer" rows="12" maxlength="50000" autofocus placeholder="输入你真正想说的话……"></textarea>
+            </label>
+          </div>
+
+          {% if item.tools %}
+            <div id="tool-response-fields" hidden>
+              <label>
+                工具名称
+                <select name="tool_name">
+                  {% for tool in item.tools %}
+                    <option value="{{ tool.function.name }}">{{ tool.function.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                JSON 参数
+                <textarea name="tool_arguments" rows="9" spellcheck="false">{}</textarea>
+              </label>
+            </div>
+          {% endif %}
+          <button type="submit">提交真人回复</button>
+        </form>
+      {% elif item.status == 'answered' %}
+        {% if item.response.tool_calls %}
+          {% for tool_call in item.response.tool_calls %}
+            <div class="final-answer tool-final">
+              <span>已请求调用工具</span>
+              <strong>{{ tool_call.function.name }}</strong>
+              <pre>{{ tool_call.function.arguments }}</pre>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="final-answer">{{ item.response.content }}</div>
+        {% endif %}
+        <p class="muted small">回答于 {{ item.answered_at | datetime }}</p>
+      {% else %}
+        <p class="muted">这个请求已经超过等待时间，不能再回答。</p>
+      {% endif %}
+    </aside>
+  </main>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/detail.js') }}?v=20260821b" defer></script>
+{% endblock %}

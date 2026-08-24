@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: iamllm
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: IAMLLM_ENV
+        value: production
+      - key: IAMLLM_DATABASE_PATH
+        value: /data/iamllm.db
+      - key: IAMLLM_API_KEY
+        sync: false
+      - key: IAMLLM_ADMIN_USERNAME
+        value: admin
+      - key: IAMLLM_ADMIN_PASSWORD
+        sync: false
+      - key: IAMLLM_SESSION_SECRET
+        generateValue: true
+      - key: IAMLLM_MODEL_NAME
+        value: iam-shaomingqing
+      - key: IAMLLM_COOKIE_SECURE
+        value: "true"
+      - key: IAMLLM_RESPONSE_TIMEOUT_SECONDS
+        value: "300"
+      - key: IAMLLM_STREAM_IDLE_TIMEOUT_SECONDS
+        value: "120"
+      - key: IAMLLM_JOB_TTL_SECONDS
+        value: "86400"
