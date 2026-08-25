@@ -4,6 +4,7 @@
 
   const elements = {
     title: document.querySelector("#conversation-title"),
+    sidebarTitle: document.querySelector("#sidebar-conversation-title"),
     messages: document.querySelector("#chat-messages"),
     welcome: document.querySelector("#welcome-message"),
     form: document.querySelector("#chat-form"),
@@ -34,7 +35,7 @@
     if (!state.pending) return;
     if (state.autoReply) {
       const seconds = Math.max(0, Math.ceil((state.autoReply.due_at - Date.now()) / 1000));
-      elements.waitingCopy.textContent = `自动挡「${state.autoReply.label}」约 ${seconds} 秒后接管；这不是 5 分钟超时`;
+      elements.waitingCopy.textContent = `规则「${state.autoReply.label}」将在约 ${seconds} 秒后返回响应`;
       return;
     }
     if (!state.expiresAt) {
@@ -44,8 +45,8 @@
     const seconds = Math.max(0, Math.ceil(state.expiresAt - Date.now() / 1000));
     const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     elements.waitingCopy.textContent = state.liveChunkCount
-      ? `真人还在继续输入 · 已实时收到 ${state.liveChunkCount} 个 chunk · 空闲 ${clock} 后自动收尾`
-      : `真人正在阅读并思考 · 等待首段 ${clock}`;
+      ? `正在流式输出 · 已收到 ${state.liveChunkCount} 个 chunk · 空闲 ${clock} 后自动结束`
+      : `正在等待首个响应片段 · ${clock}`;
   };
 
   const request = async (url, options = {}) => {
@@ -79,10 +80,31 @@
   };
 
   const contentPart = (content, className = "message-text") => {
-    const paragraph = document.createElement("div");
-    paragraph.className = className;
-    paragraph.textContent = content;
-    return paragraph;
+    const container = document.createElement("div");
+    container.className = className;
+    const pattern = /```([\w-]*)\n?([\s\S]*?)```/g;
+    let cursor = 0;
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      if (match.index > cursor) {
+        const text = document.createElement("span");
+        text.textContent = content.slice(cursor, match.index);
+        container.appendChild(text);
+      }
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = match[2].replace(/\n$/, "");
+      if (match[1]) code.dataset.language = match[1];
+      pre.appendChild(code);
+      container.appendChild(pre);
+      cursor = pattern.lastIndex;
+    }
+    if (cursor < content.length || !container.childNodes.length) {
+      const text = document.createElement("span");
+      text.textContent = content.slice(cursor);
+      container.appendChild(text);
+    }
+    return container;
   };
 
   const renderMessage = (message) => {
@@ -90,12 +112,27 @@
     article.className = `chat-bubble chat-bubble-${message.role}`;
     if (message.streaming) article.classList.add("chat-bubble-streaming");
 
+    const head = document.createElement("div");
+    head.className = "chat-bubble-head";
     const role = document.createElement("span");
     role.className = "chat-bubble-role";
     role.textContent = message.role === "user"
-      ? "你"
-      : `${app.dataset.modelName || "iamllm"} 回复${message.streaming ? " · LIVE" : ""}`;
-    article.appendChild(role);
+      ? "You"
+      : `${app.dataset.modelName || "Assistant"}${message.streaming ? " · Streaming" : ""}`;
+    head.appendChild(role);
+    if (message.role === "assistant" && typeof message.content === "string") {
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "message-copy";
+      copy.textContent = "复制";
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(message.content); copy.textContent = "已复制"; }
+        catch { copy.textContent = "复制失败"; }
+        window.setTimeout(() => { copy.textContent = "复制"; }, 1600);
+      });
+      head.appendChild(copy);
+    }
+    article.appendChild(head);
 
     if (typeof message.content === "string") {
       article.appendChild(contentPart(message.content));
@@ -118,7 +155,7 @@
       message.tool_calls.forEach((toolCall) => {
         const tool = document.createElement("div");
         tool.className = "chat-tool-call";
-        tool.textContent = `请求调用 ${toolCall.function?.name || "工具"}`;
+        tool.textContent = `Tool call · ${toolCall.function?.name || "unknown"}`;
         article.appendChild(tool);
       });
     }
@@ -127,6 +164,7 @@
 
   const renderConversation = (conversation) => {
     elements.title.textContent = conversation.title || "新对话";
+    elements.sidebarTitle.textContent = conversation.title || "新对话";
     const fragments = document.createDocumentFragment();
     if (!conversation.messages.length) {
       elements.welcome.hidden = false;
@@ -303,6 +341,14 @@
   elements.input.addEventListener("input", () => {
     elements.input.style.height = "auto";
     elements.input.style.height = `${Math.min(elements.input.scrollHeight, 160)}px`;
+  });
+
+  document.querySelectorAll("[data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      elements.input.value = button.dataset.prompt || "";
+      elements.input.dispatchEvent(new Event("input"));
+      elements.input.focus();
+    });
   });
 
   elements.newChat.addEventListener("click", async () => {

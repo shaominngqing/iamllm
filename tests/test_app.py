@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import time
@@ -11,7 +12,12 @@ from pathlib import Path
 from threading import Event, Thread
 
 import pytest
+import httpx
+from anthropic import AsyncAnthropic
 from fastapi.testclient import TestClient
+from google import genai
+from google.genai import types as genai_types
+from openai import AsyncOpenAI
 from PIL import Image
 
 from app.config import Settings
@@ -246,7 +252,12 @@ def test_public_chat_upload_and_context(tmp_path: Path) -> None:
     app = create_app(build_settings(tmp_path))
 
     with TestClient(app) as client:
-        assert client.get("/chat").status_code == 200
+        chat_page = client.get("/chat")
+        assert chat_page.status_code == 200
+        assert "API Playground" in chat_page.text
+        assert "有什么可以帮你" in chat_page.text
+        assert "真人" not in chat_page.text
+        assert 'data-prompt="' in chat_page.text
         conversation = client.post("/chat/api/conversations").json()
         conversation_id = conversation["id"]
 
@@ -431,6 +442,504 @@ def test_streaming_completion_waits_for_human_answer(tmp_path: Path) -> None:
         assert response.text.rstrip().endswith("data: [DONE]")
 
 
+def test_openai_responses_non_stream_supports_items_images_and_tools(
+    tmp_path: Path,
+) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"Authorization": "Bearer test-api-key"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.post,
+            "/v1/responses",
+            headers=auth,
+            json={
+                "model": "gpt-compatible-alias",
+                "instructions": "保持诚实，也保持一点幽默。",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "看看这张图片"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,iVBORw0KGgo=",
+                            },
+                        ],
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "save_note",
+                        "description": "保存笔记",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                        },
+                    }
+                ],
+            },
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert request_id.startswith("resp_")
+        stored = app.state.database.get_request(request_id)
+        assert stored is not None
+        assert stored["source"] == "openai_responses"
+        assert stored["model"] == "gpt-compatible-alias"
+        assert stored["messages"][0]["role"] == "system"
+        assert stored["messages"][1]["content"][1]["type"] == "image_url"
+        assert stored["tools"][0]["function"]["name"] == "save_note"
+
+        assert app.state.database.answer_request(
+            request_id,
+            {"role": "assistant", "content": "图我看到了，人类视觉模块正常。"},
+            f"msg_answer_{request_id}",
+        )
+        response = future.result(timeout=3)
+        assert response.status_code == 200
+        assert response.headers["x-request-id"] == request_id
+        body = response.json()
+        assert body["id"] == request_id
+        assert body["object"] == "response"
+        assert body["status"] == "completed"
+        assert body["output"][0]["type"] == "message"
+        assert body["output"][0]["content"][0]["type"] == "output_text"
+        assert body["output"][0]["content"][0]["text"] == (
+            "图我看到了，人类视觉模块正常。"
+        )
+
+
+def test_openai_responses_stream_and_previous_response_context(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"Authorization": "Bearer test-api-key"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        login_admin(client)
+        future = executor.submit(
+            client.post,
+            "/v1/responses",
+            headers=auth,
+            json={
+                "model": "gpt-5",
+                "input": "我的名字叫小明。",
+                "stream": True,
+            },
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "你好，"},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "小明。"},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/finish"
+        ).status_code == 200
+
+        streamed = future.result(timeout=3)
+        assert streamed.status_code == 200
+        event_names = [
+            line.removeprefix("event: ")
+            for line in streamed.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        assert event_names[:2] == ["response.created", "response.in_progress"]
+        assert event_names[-1] == "response.completed"
+        deltas = [
+            item["delta"]
+            for item in payloads
+            if item["type"] == "response.output_text.delta"
+        ]
+        assert deltas == ["你好，", "小明。"]
+        assert payloads[-1]["response"]["output"][0]["content"][0]["text"] == (
+            "你好，小明。"
+        )
+
+        followup = client.post(
+            "/v1/responses",
+            headers=auth,
+            json={
+                "model": "gpt-5",
+                "input": "我叫什么？",
+                "previous_response_id": request_id,
+                "background": True,
+            },
+        )
+        assert followup.status_code == 200
+        assert followup.json()["status"] == "in_progress"
+        followup_id = followup.json()["id"]
+        chained = app.state.database.get_request(followup_id)
+        assert chained is not None
+        assert [message["role"] for message in chained["messages"]] == [
+            "user",
+            "assistant",
+            "user",
+        ]
+        assert chained["messages"][1]["content"] == "你好，小明。"
+
+        assert app.state.database.answer_request(
+            followup_id,
+            {"role": "assistant", "content": "你叫小明。"},
+            f"msg_answer_{followup_id}",
+        )
+        retrieved = client.get(f"/v1/responses/{followup_id}", headers=auth)
+        assert retrieved.status_code == 200
+        assert retrieved.json()["status"] == "completed"
+        assert retrieved.json()["output"][0]["content"][0]["text"] == "你叫小明。"
+
+
+def test_anthropic_messages_supports_native_auth_blocks_and_tool_use(
+    tmp_path: Path,
+) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"x-api-key": "test-api-key", "anthropic-version": "2023-06-01"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.post,
+            "/v1/messages",
+            headers=auth,
+            json={
+                "model": "claude-sonnet-compatible",
+                "max_tokens": 1024,
+                "system": [{"type": "text", "text": "你是一个真人模型。"}],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "保存图片备注"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "iVBORw0KGgo=",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "tools": [
+                    {
+                        "name": "save_note",
+                        "description": "保存笔记",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                        },
+                    }
+                ],
+            },
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert request_id.startswith("msg_")
+        stored = app.state.database.get_request(request_id)
+        assert stored is not None
+        assert stored["source"] == "anthropic_messages"
+        assert stored["messages"][1]["content"][1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
+
+        assert app.state.database.answer_request(
+            request_id,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "toolu_human_note",
+                        "type": "function",
+                        "function": {
+                            "name": "save_note",
+                            "arguments": '{"text":"真人备注"}',
+                        },
+                    }
+                ],
+            },
+            f"msg_answer_{request_id}",
+        )
+        response = future.result(timeout=3)
+        assert response.status_code == 200
+        assert response.headers["request-id"] == request_id
+        body = response.json()
+        assert body["type"] == "message"
+        assert body["stop_reason"] == "tool_use"
+        assert body["content"][0] == {
+            "type": "tool_use",
+            "id": "toolu_human_note",
+            "name": "save_note",
+            "input": {"text": "真人备注"},
+        }
+
+
+def test_anthropic_stream_count_tokens_and_error_shapes(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"x-api-key": "test-api-key"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        unauthorized = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-test",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+        assert unauthorized.status_code == 401
+        assert unauthorized.json()["type"] == "error"
+        assert unauthorized.json()["error"]["type"] == "authentication_error"
+
+        counted = client.post(
+            "/v1/messages/count_tokens",
+            headers=auth,
+            json={
+                "model": "claude-test",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hello world"}],
+            },
+        )
+        assert counted.status_code == 200
+        assert counted.json()["input_tokens"] > 0
+
+        login_admin(client)
+        future = executor.submit(
+            client.post,
+            "/v1/messages",
+            headers=auth,
+            json={
+                "model": "claude-test",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "流式说句话"}],
+                "stream": True,
+            },
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "碳基"},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "流式输出"},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/finish"
+        ).status_code == 200
+
+        streamed = future.result(timeout=3)
+        event_names = [
+            line.removeprefix("event: ")
+            for line in streamed.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        assert event_names[0] == "message_start"
+        assert event_names[-1] == "message_stop"
+        payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        deltas = [
+            item["delta"]["text"]
+            for item in payloads
+            if item["type"] == "content_block_delta"
+            and item["delta"]["type"] == "text_delta"
+        ]
+        assert deltas == ["碳基", "流式输出"]
+
+
+def test_gemini_generate_content_supports_images_tools_and_native_auth(
+    tmp_path: Path,
+) -> None:
+    app = create_app(build_settings(tmp_path))
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.post,
+            "/v1beta/models/gemini-compatible:generateContent?key=test-api-key",
+            json={
+                "systemInstruction": {
+                    "parts": [{"text": "这是一个真人驱动的 Gemini。"}]
+                },
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "保存图片备注"},
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": "iVBORw0KGgo=",
+                                }
+                            },
+                        ],
+                    }
+                ],
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            {
+                                "name": "save_note",
+                                "description": "保存笔记",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"text": {"type": "string"}},
+                                },
+                            }
+                        ]
+                    }
+                ],
+            },
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert request_id.startswith("gemini_")
+        stored = app.state.database.get_request(request_id)
+        assert stored is not None
+        assert stored["source"] == "gemini_generate_content"
+        assert stored["messages"][0]["role"] == "system"
+        assert stored["messages"][1]["content"][1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
+        assert stored["tools"][0]["function"]["name"] == "save_note"
+
+        assert app.state.database.answer_request(
+            request_id,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_save_note",
+                        "type": "function",
+                        "function": {
+                            "name": "save_note",
+                            "arguments": '{"text":"Gemini 真人备注"}',
+                        },
+                    }
+                ],
+            },
+            f"msg_answer_{request_id}",
+        )
+        response = future.result(timeout=3)
+        assert response.status_code == 200
+        assert response.headers["x-goog-request-id"] == request_id
+        body = response.json()
+        assert body["responseId"] == request_id
+        assert body["modelVersion"] == "gemini-compatible"
+        assert body["candidates"][0]["content"]["parts"][0] == {
+            "functionCall": {
+                "name": "save_note",
+                "args": {"text": "Gemini 真人备注"},
+            }
+        }
+
+
+def test_gemini_stream_count_tokens_and_error_shape(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"x-goog-api-key": "test-api-key"}
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        unauthorized = client.post(
+            "/v1beta/models/gemini-test:generateContent",
+            json={"contents": [{"parts": [{"text": "hello"}]}]},
+        )
+        assert unauthorized.status_code == 401
+        assert unauthorized.json()["error"]["status"] == "UNAUTHENTICATED"
+
+        counted = client.post(
+            "/v1beta/models/gemini-test:countTokens",
+            headers=auth,
+            json={"contents": [{"parts": [{"text": "hello world"}]}]},
+        )
+        assert counted.status_code == 200
+        assert counted.json()["totalTokens"] > 0
+
+        login_admin(client)
+        future = executor.submit(
+            client.post,
+            "/v1beta/models/gemini-test:streamGenerateContent?alt=sse",
+            headers=auth,
+            json={"contents": [{"parts": [{"text": "Gemini 流式测试"}]}]},
+        )
+        request_id = None
+        for _ in range(100):
+            pending = app.state.database.list_requests(status="pending")
+            if pending:
+                request_id = pending[0]["id"]
+                break
+            time.sleep(0.01)
+        assert request_id is not None
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "Gemini "},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/chunks",
+            json={"content": "也由真人流式回答。"},
+        ).status_code == 200
+        assert client.post(
+            f"/admin/api/requests/{request_id}/stream/finish"
+        ).status_code == 200
+
+        streamed = future.result(timeout=3)
+        payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in streamed.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        deltas = [
+            item["candidates"][0]["content"]["parts"][0]["text"]
+            for item in payloads[:-1]
+        ]
+        assert deltas == ["Gemini ", "也由真人流式回答。"]
+        assert payloads[-1]["candidates"][0]["finishReason"] == "STOP"
+        assert payloads[-1]["responseId"] == request_id
+
+
 def test_unified_admin_and_automation_crud(tmp_path: Path) -> None:
     app = create_app(build_settings(tmp_path))
 
@@ -438,14 +947,19 @@ def test_unified_admin_and_automation_crud(tmp_path: Path) -> None:
         login_admin(client)
         page = client.get("/admin")
         assert page.status_code == 200
-        assert "人类模型控制台" in page.text
+        assert "API control plane" in page.text
+        assert "接入指南" in page.text
+        assert "服务设置" in page.text
+        assert "当前运行参数" in page.text
+        assert "模型配置" not in page.text
         assert "快捷话术" in page.text
         assert "自动回复规则" in page.text
         assert "空闲自动接单" in page.text
 
         chat_page = client.get("/chat")
-        assert "超时会自动说明情况" in chat_page.text
-        assert "不冒充真人" in chat_page.text
+        assert "正在生成回复" in chat_page.text
+        assert "Playground 仅用于调试" in chat_page.text
+        assert "真人" not in chat_page.text
 
         # Legacy pages receive a finite compatibility event instead of keeping
         # one SSE connection per browser tab indefinitely.
@@ -731,3 +1245,314 @@ def test_schedule_rule_supports_overnight_window(tmp_path: Path) -> None:
         )
         assert matched is not None
         assert matched["id"] == rule["id"]
+
+
+def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+
+    with TestClient(app) as client:
+        login_admin(client)
+        dashboard = client.get("/admin")
+        assert dashboard.status_code == 200
+        assert 'data-panel="keys"' in dashboard.text
+        assert 'data-panel="integration"' in dashboard.text
+        assert "OPENAI BASE URL" in dashboard.text
+        assert 'id="api-key-dialog"' in dashboard.text
+        assert 'id="api-key-reveal-dialog"' in dashboard.text
+        assert 'id="api-share-card"' in dashboard.text
+        assert 'id="download-share-card"' in dashboard.text
+        assert "包含完整 API Key，请私下分享" in dashboard.text
+        created = client.post(
+            "/admin/api/api-keys",
+            json={
+                "name": "朋友的万能接入钥匙",
+                "rate_limit_per_minute": 100,
+                "daily_limit": 1000,
+                "max_concurrent": 1,
+            },
+        )
+        assert created.status_code == 201
+        secret = created.json()["key"]
+        item = created.json()["item"]
+        assert secret.startswith("sk-")
+        assert "iamllm" not in secret.lower()
+        assert secret not in json.dumps(item)
+        assert "key_hash" not in item
+
+        listed = client.get("/admin/api/api-keys")
+        assert listed.status_code == 200
+        assert secret not in listed.text
+        managed = next(
+            entry for entry in listed.json()["items"] if entry["id"] == item["id"]
+        )
+        assert managed["key_hint"].startswith("sk-")
+        assert managed["managed"] is True
+
+        with app.state.database._connect() as connection:
+            stored = connection.execute(
+                "SELECT key_hash, key_hint FROM api_keys WHERE id = ?", (item["id"],)
+            ).fetchone()
+        assert stored is not None
+        assert stored["key_hash"] != secret
+        assert secret not in stored["key_hint"]
+
+        bearer = {"Authorization": f"Bearer {secret}"}
+        anthropic = {"x-api-key": secret}
+        gemini = {"x-goog-api-key": secret}
+        assert client.get("/v1/models", headers=bearer).status_code == 200
+        assert client.post(
+            "/v1/messages/count_tokens",
+            headers=anthropic,
+            json={
+                "model": "claude-compatible",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        ).status_code == 200
+        assert client.post(
+            "/v1beta/models/gemini-compatible:countTokens",
+            headers=gemini,
+            json={"contents": [{"parts": [{"text": "hello"}]}]},
+        ).status_code == 200
+
+        first = client.post(
+            "/v1/human/jobs",
+            headers=bearer,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "第一个问题"}],
+            },
+        )
+        assert first.status_code == 202
+        stored_request = app.state.database.get_request(first.json()["id"])
+        assert stored_request is not None
+        assert stored_request["api_key_id"] == item["id"]
+
+        queued = client.post(
+            "/v1/human/jobs",
+            headers=bearer,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "先让我插个队"}],
+            },
+        )
+        assert queued.status_code == 429
+        assert queued.headers["retry-after"] == "5"
+        assert "先排会儿队" in queued.json()["detail"]
+
+        assert app.state.database.answer_request(
+            first.json()["id"],
+            {"role": "assistant", "content": "第一个问题答完了。"},
+            "msg_managed_key_answer",
+        )
+        second = client.post(
+            "/v1/human/jobs",
+            headers=bearer,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "现在轮到我了吗"}],
+            },
+        )
+        assert second.status_code == 202
+
+        paused = client.patch(
+            f"/admin/api/api-keys/{item['id']}", json={"active": False}
+        )
+        assert paused.status_code == 200
+        assert paused.json()["status"] == "paused"
+        assert client.get("/v1/models", headers=bearer).status_code == 401
+
+        resumed = client.patch(
+            f"/admin/api/api-keys/{item['id']}", json={"active": True}
+        )
+        assert resumed.status_code == 200
+        assert client.get("/v1/models", headers=bearer).status_code == 200
+
+        revoked = client.post(f"/admin/api/api-keys/{item['id']}/revoke")
+        assert revoked.status_code == 200
+        assert revoked.json()["status"] == "revoked"
+        assert client.get("/v1/models", headers=bearer).status_code == 401
+        assert client.get(
+            "/v1/models", headers={"Authorization": "Bearer test-api-key"}
+        ).status_code == 200
+
+
+def test_managed_api_key_minute_and_daily_limits(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+
+    with TestClient(app) as client:
+        login_admin(client)
+        minute_secret = client.post(
+            "/admin/api/api-keys",
+            json={
+                "name": "一分钟只问一次",
+                "rate_limit_per_minute": 1,
+                "daily_limit": 100,
+                "max_concurrent": 10,
+            },
+        ).json()["key"]
+        minute_auth = {"Authorization": f"Bearer {minute_secret}"}
+        assert client.post(
+            "/v1/human/jobs",
+            headers=minute_auth,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "第一次"}],
+            },
+        ).status_code == 202
+        minute_limited = client.post(
+            "/v1/chat/completions",
+            headers=minute_auth,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "第二次"}],
+            },
+        )
+        assert minute_limited.status_code == 429
+        assert minute_limited.json()["error"]["type"] == "rate_limit_error"
+        assert "每分钟最多 1 次" in minute_limited.json()["error"]["message"]
+        assert 1 <= int(minute_limited.headers["retry-after"]) <= 60
+
+        daily_secret = client.post(
+            "/admin/api/api-keys",
+            json={
+                "name": "一天只问一次",
+                "rate_limit_per_minute": 100,
+                "daily_limit": 1,
+                "max_concurrent": 10,
+            },
+        ).json()["key"]
+        daily_auth = {"Authorization": f"Bearer {daily_secret}"}
+        assert client.post(
+            "/v1/human/jobs",
+            headers=daily_auth,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "今天第一次"}],
+            },
+        ).status_code == 202
+        daily_limited = client.post(
+            "/v1/human/jobs",
+            headers=daily_auth,
+            json={
+                "model": "test-human",
+                "messages": [{"role": "user", "content": "今天第二次"}],
+            },
+        )
+        assert daily_limited.status_code == 429
+        assert "每天最多 1 次" in daily_limited.json()["detail"]
+
+
+def test_official_sdks_accept_managed_key_and_custom_base_url(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+
+    with TestClient(app) as client:
+        login_admin(client)
+        secret = client.post(
+            "/admin/api/api-keys",
+            json={
+                "name": "官方 SDK 契约测试",
+                "rate_limit_per_minute": 100,
+                "daily_limit": 100,
+                "max_concurrent": 10,
+            },
+        ).json()["key"]
+
+        async def exercise_clients() -> None:
+            async def answer_next(source: str, content: str) -> None:
+                for _ in range(200):
+                    pending = app.state.database.list_requests(status="pending")
+                    row = next(
+                        (item for item in pending if item["source"] == source), None
+                    )
+                    if row:
+                        assert app.state.database.answer_request(
+                            row["id"],
+                            {"role": "assistant", "content": content},
+                            f"msg_sdk_{source}",
+                        )
+                        return
+                    await asyncio.sleep(0.01)
+                raise AssertionError(f"SDK request did not reach queue: {source}")
+
+            openai_http = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app)
+            )
+            openai_client = AsyncOpenAI(
+                api_key=secret,
+                base_url="http://iamllm.test/v1",
+                http_client=openai_http,
+                max_retries=0,
+            )
+            try:
+                models = await openai_client.models.list()
+                assert models.data[0].id == "test-human"
+                openai_answer = asyncio.create_task(
+                    answer_next("openai_responses", "Responses SDK 已接通。")
+                )
+                response = await openai_client.responses.create(
+                    model="gpt-compatible", input="测试官方 Responses SDK"
+                )
+                await openai_answer
+                assert response.output_text == "Responses SDK 已接通。"
+            finally:
+                await openai_client.close()
+
+            anthropic_http = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app)
+            )
+            anthropic_client = AsyncAnthropic(
+                api_key=secret,
+                base_url="http://iamllm.test",
+                http_client=anthropic_http,
+                max_retries=0,
+            )
+            try:
+                counted = await anthropic_client.messages.count_tokens(
+                    model="claude-compatible",
+                    messages=[{"role": "user", "content": "hello sdk"}],
+                )
+                assert counted.input_tokens > 0
+                anthropic_answer = asyncio.create_task(
+                    answer_next("anthropic_messages", "Claude SDK 已接通。")
+                )
+                message = await anthropic_client.messages.create(
+                    model="claude-compatible",
+                    max_tokens=100,
+                    messages=[
+                        {"role": "user", "content": "测试官方 Claude SDK"}
+                    ],
+                )
+                await anthropic_answer
+                assert message.content[0].text == "Claude SDK 已接通。"
+            finally:
+                await anthropic_client.close()
+
+            gemini_http = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app)
+            )
+            gemini_client = genai.Client(
+                api_key=secret,
+                http_options=genai_types.HttpOptions(
+                    base_url="http://iamllm.test",
+                    api_version="v1beta",
+                    httpx_async_client=gemini_http,
+                ),
+            )
+            try:
+                gemini_count = await gemini_client.aio.models.count_tokens(
+                    model="gemini-compatible", contents="hello sdk"
+                )
+                assert gemini_count.total_tokens > 0
+                gemini_answer = asyncio.create_task(
+                    answer_next("gemini_generate_content", "Gemini SDK 已接通。")
+                )
+                gemini_response = await gemini_client.aio.models.generate_content(
+                    model="gemini-compatible", contents="测试官方 Gemini SDK"
+                )
+                await gemini_answer
+                assert gemini_response.text == "Gemini SDK 已接通。"
+            finally:
+                await gemini_client.aio.aclose()
+
+        asyncio.run(exercise_clients())

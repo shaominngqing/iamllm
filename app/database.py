@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -129,6 +129,36 @@ class Database:
                     updated_at INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    key_hint TEXT NOT NULL,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    rate_limit_per_minute INTEGER NOT NULL DEFAULT 10,
+                    daily_limit INTEGER NOT NULL DEFAULT 100,
+                    max_concurrent INTEGER NOT NULL DEFAULT 3,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    last_used_at INTEGER,
+                    revoked_at INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_api_keys_active
+                ON api_keys(active, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS api_key_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_api_key_calls_window
+                ON api_key_calls(api_key_id, created_at);
+
                 INSERT OR IGNORE INTO app_meta(key, value)
                 VALUES ('queue_version', 1);
                 """
@@ -192,6 +222,15 @@ class Database:
             )
             self._ensure_column(
                 connection, "human_requests", "client_last_seen_at", "INTEGER"
+            )
+            self._ensure_column(
+                connection, "human_requests", "api_key_id", "TEXT"
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_human_requests_api_key_status
+                ON human_requests(api_key_id, status)
+                """
             )
             self._seed_control_center(connection)
 
@@ -308,6 +347,241 @@ class Database:
                 "SELECT value FROM app_meta WHERE key = 'queue_version'"
             ).fetchone()
         return int(row["value"])
+
+    def _api_key_usage_windows(self, now_ms: int) -> tuple[int, int]:
+        local_now = datetime.fromtimestamp(now_ms / 1000, self.timezone)
+        midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return now_ms - 60_000, int(midnight.timestamp() * 1000)
+
+    def create_api_key(
+        self,
+        *,
+        key_id: str,
+        name: str,
+        key_hint: str,
+        key_hash: str,
+        rate_limit_per_minute: int,
+        daily_limit: int,
+        max_concurrent: int,
+    ) -> dict[str, Any]:
+        now = _now_ms()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO api_keys (
+                    id, name, key_hint, key_hash, active,
+                    rate_limit_per_minute, daily_limit, max_concurrent,
+                    request_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    key_id,
+                    name,
+                    key_hint,
+                    key_hash,
+                    rate_limit_per_minute,
+                    daily_limit,
+                    max_concurrent,
+                    now,
+                    now,
+                ),
+            )
+        result = self.get_api_key(key_id)
+        assert result is not None
+        return result
+
+    def get_api_key(self, key_id: str) -> dict[str, Any] | None:
+        now = _now_ms()
+        minute_start, day_start = self._api_key_usage_windows(now)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT key_row.*,
+                    (SELECT COUNT(*) FROM api_key_calls calls
+                     WHERE calls.api_key_id = key_row.id
+                       AND calls.created_at >= ?) AS usage_minute,
+                    (SELECT COUNT(*) FROM api_key_calls calls
+                     WHERE calls.api_key_id = key_row.id
+                       AND calls.created_at >= ?) AS usage_today,
+                    (SELECT COUNT(*) FROM human_requests requests
+                     WHERE requests.api_key_id = key_row.id
+                       AND requests.status = 'pending') AS pending_requests
+                FROM api_keys key_row WHERE key_row.id = ?
+                """,
+                (minute_start, day_start, key_id),
+            ).fetchone()
+        return self._deserialize_api_key(row) if row else None
+
+    def list_api_keys(self) -> list[dict[str, Any]]:
+        now = _now_ms()
+        minute_start, day_start = self._api_key_usage_windows(now)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT key_row.*,
+                    (SELECT COUNT(*) FROM api_key_calls calls
+                     WHERE calls.api_key_id = key_row.id
+                       AND calls.created_at >= ?) AS usage_minute,
+                    (SELECT COUNT(*) FROM api_key_calls calls
+                     WHERE calls.api_key_id = key_row.id
+                       AND calls.created_at >= ?) AS usage_today,
+                    (SELECT COUNT(*) FROM human_requests requests
+                     WHERE requests.api_key_id = key_row.id
+                       AND requests.status = 'pending') AS pending_requests
+                FROM api_keys key_row
+                ORDER BY key_row.revoked_at IS NOT NULL,
+                    key_row.active DESC, key_row.created_at DESC
+                """,
+                (minute_start, day_start),
+            ).fetchall()
+        return [self._deserialize_api_key(row) for row in rows]
+
+    def update_api_key(
+        self, key_id: str, values: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "active",
+            "rate_limit_per_minute",
+            "daily_limit",
+            "max_concurrent",
+        }
+        updates = {key: value for key, value in values.items() if key in allowed}
+        existing = self.get_api_key(key_id)
+        if not existing:
+            return None
+        if existing["revoked"]:
+            return existing
+        if not updates:
+            return existing
+        if "active" in updates:
+            updates["active"] = int(bool(updates["active"]))
+        updates["updated_at"] = _now_ms()
+        assignment = ", ".join(f"{key} = ?" for key in updates)
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE api_keys SET {assignment} WHERE id = ?",
+                (*updates.values(), key_id),
+            )
+        return self.get_api_key(key_id)
+
+    def revoke_api_key(self, key_id: str) -> dict[str, Any] | None:
+        now = _now_ms()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE api_keys
+                SET active = 0, revoked_at = ?, updated_at = ?
+                WHERE id = ? AND revoked_at IS NULL
+                """,
+                (now, now, key_id),
+            )
+        if not cursor.rowcount and not self.get_api_key(key_id):
+            return None
+        return self.get_api_key(key_id)
+
+    def authorize_api_key_hash(
+        self, key_hash: str, *, count_usage: bool
+    ) -> dict[str, Any]:
+        now = _now_ms()
+        minute_start, day_start = self._api_key_usage_windows(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)
+            ).fetchone()
+            if not row or not row["active"] or row["revoked_at"] is not None:
+                return {"status": "invalid"}
+
+            connection.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            if not count_usage:
+                return {"status": "allowed", "api_key_id": str(row["id"])}
+
+            usage_minute = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM api_key_calls
+                    WHERE api_key_id = ? AND created_at >= ?
+                    """,
+                    (row["id"], minute_start),
+                ).fetchone()["count"]
+            )
+            usage_today = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM api_key_calls
+                    WHERE api_key_id = ? AND created_at >= ?
+                    """,
+                    (row["id"], day_start),
+                ).fetchone()["count"]
+            )
+            pending = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM human_requests
+                    WHERE api_key_id = ? AND status = 'pending'
+                    """,
+                    (row["id"],),
+                ).fetchone()["count"]
+            )
+            if usage_minute >= int(row["rate_limit_per_minute"]):
+                oldest = connection.execute(
+                    """
+                    SELECT MIN(created_at) AS created_at FROM api_key_calls
+                    WHERE api_key_id = ? AND created_at >= ?
+                    """,
+                    (row["id"], minute_start),
+                ).fetchone()["created_at"]
+                retry_after = max(1, int((int(oldest or now) + 60_000 - now + 999) / 1000))
+                return {
+                    "status": "limited",
+                    "reason": "minute",
+                    "retry_after": retry_after,
+                    "limit": int(row["rate_limit_per_minute"]),
+                }
+            if usage_today >= int(row["daily_limit"]):
+                local_now = datetime.fromtimestamp(now / 1000, self.timezone)
+                next_midnight = (local_now + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                retry_after = max(
+                    1,
+                    int((next_midnight.timestamp() * 1000 - now + 999) / 1000),
+                )
+                return {
+                    "status": "limited",
+                    "reason": "daily",
+                    "retry_after": retry_after,
+                    "limit": int(row["daily_limit"]),
+                }
+            if pending >= int(row["max_concurrent"]):
+                return {
+                    "status": "limited",
+                    "reason": "concurrent",
+                    "retry_after": 5,
+                    "limit": int(row["max_concurrent"]),
+                }
+
+            connection.execute(
+                "INSERT INTO api_key_calls(api_key_id, created_at) VALUES (?, ?)",
+                (row["id"], now),
+            )
+            connection.execute(
+                """
+                UPDATE api_keys
+                SET request_count = request_count + 1, last_used_at = ?
+                WHERE id = ?
+                """,
+                (now, row["id"]),
+            )
+            connection.execute(
+                "DELETE FROM api_key_calls WHERE created_at < ?",
+                (day_start - 86_400_000,),
+            )
+            return {"status": "allowed", "api_key_id": str(row["id"])}
 
     def ensure_profile(self, *, display_name: str) -> None:
         now = _now_ms()
@@ -752,6 +1026,7 @@ class Database:
         tools: list[dict[str, Any]] | None = None,
         source: str = "api",
         stream_requested: bool = False,
+        api_key_id: str | None = None,
     ) -> dict[str, Any]:
         now_seconds = int(time.time())
         now = _now_ms()
@@ -768,8 +1043,8 @@ class Database:
                     tools_json, response_json, source, updated_at,
                     auto_reply_rule_id, auto_reply_due_at, auto_reply_label,
                     auto_reply_text, answer_source, stream_requested,
-                    stream_chunk_count
-                ) VALUES (?, ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, 0)
+                    stream_chunk_count, api_key_id
+                ) VALUES (?, ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?)
                 """,
                 (
                     request_id,
@@ -787,6 +1062,7 @@ class Database:
                     auto_rule["name"] if auto_rule else None,
                     auto_rule["response_text"] if auto_rule else None,
                     int(stream_requested),
+                    api_key_id,
                 ),
             )
             self._bump_queue_version(connection)
@@ -1288,6 +1564,25 @@ class Database:
                 "SELECT COUNT(*) AS count FROM human_requests WHERE status = 'pending'"
             ).fetchone()
         return int(row["count"])
+
+    @staticmethod
+    def _deserialize_api_key(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result.pop("key_hash", None)
+        result["active"] = bool(result["active"])
+        result["revoked"] = result.get("revoked_at") is not None
+        result["status"] = (
+            "revoked"
+            if result["revoked"]
+            else "active"
+            if result["active"]
+            else "paused"
+        )
+        result["usage_minute"] = int(result.get("usage_minute") or 0)
+        result["usage_today"] = int(result.get("usage_today") or 0)
+        result["pending_requests"] = int(result.get("pending_requests") or 0)
+        result["managed"] = True
+        return result
 
     @staticmethod
     def _deserialize_request(row: sqlite3.Row) -> dict[str, Any]:

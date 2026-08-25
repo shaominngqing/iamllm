@@ -95,8 +95,8 @@
 
           <div id="text-response-fields">
             <label>
-              真人回答
-              <textarea name="answer" rows="12" maxlength="50000" autofocus placeholder="输入你真正想说的话……"></textarea>
+              模型回复
+              <textarea name="answer" rows="12" maxlength="50000" autofocus placeholder="输入回复内容……"></textarea>
             </label>
           </div>
 
@@ -116,7 +116,7 @@
               </label>
             </div>
           {% endif %}
-          <button type="submit">提交真人回复</button>
+          <button type="submit">提交回复</button>
         </form>
       {% elif item.status == 'answered' %}
         {% if item.response.tool_calls %}

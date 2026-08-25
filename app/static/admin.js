@@ -27,7 +27,9 @@
     requestFilter: "pending",
     quickReplies: [],
     rules: [],
+    apiKeys: [],
     profile: null,
+    lastCreatedKey: null,
     knownRequestIds: new Set(),
     newArrivalIds: new Set(),
     queueLoaded: false,
@@ -44,10 +46,12 @@
     selectedRequestClaimConflict: false,
   };
   const sectionCopy = {
-    cockpit: ["HUMAN OPERATIONS", "驾驶舱"],
-    inbox: ["LIVE REQUESTS", "等我回"],
-    automation: ["RESPONSE ASSIST", "自动挡"],
-    persona: ["MODEL IDENTITY", "人类设定"],
+    cockpit: ["API OPERATIONS", "概览"],
+    inbox: ["LIVE REQUESTS", "请求队列"],
+    keys: ["ACCESS CONTROL", "API 密钥"],
+    integration: ["DEVELOPER EXPERIENCE", "接入指南"],
+    automation: ["RESPONSE AUTOMATION", "自动回复"],
+    settings: ["SERVICE CONFIGURATION", "服务设置"],
   };
   let toastTimer;
 
@@ -71,6 +75,20 @@
     box.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => box.classList.remove("show"), 2800);
+  }
+
+  async function copyText(value, successMessage = "已复制") {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const temporary = make("textarea");
+      temporary.value = value;
+      document.body.append(temporary);
+      temporary.select();
+      document.execCommand("copy");
+      temporary.remove();
+    }
+    toast(successMessage, false);
   }
 
   async function api(path, options = {}) {
@@ -183,6 +201,7 @@
 
   function currentRoute() {
     const route = location.hash.replace(/^#/, "").split("/").filter(Boolean);
+    if (route[0] === "persona") route[0] = "settings";
     return { section: sectionCopy[route[0]] ? route[0] : "cockpit", id: route[1] || null };
   }
 
@@ -206,7 +225,9 @@
       loadRequests({ preferredId: routeId, reason: "enter", forceDetail: Boolean(routeId) });
     }
     if (section === "automation") loadAutomation();
-    if (section === "persona" && state.profile) populateProfile(state.profile);
+    if (section === "keys") loadApiKeys();
+    if (section === "integration") renderIntegration();
+    if (section === "settings" && state.profile) renderServiceSettings();
   }
 
   async function loadOverview({ silent = false } = {}) {
@@ -220,9 +241,10 @@
       $("#metric-latency").textContent = latencyLabel(data.avg_response_seconds);
       $("#nav-pending").textContent = data.pending;
       $("#welcome-name").textContent = data.profile.display_name;
-      $("#vital-availability").textContent = data.profile.availability || "尚未设置，人类行踪成谜";
+      $("#vital-availability").textContent = data.profile.availability || "未设置状态说明";
       $("#vital-rules").textContent = `${data.active_rules} 条`;
       $("#vital-notifications").textContent = data.notifications_enabled ? "已接通" : "未配置";
+      $("#settings-notifications").textContent = data.notifications_enabled ? "已接通" : "未配置";
       $("#test-notification").disabled = !data.notifications_enabled;
       return data;
     } catch (error) {
@@ -292,7 +314,7 @@
     list.replaceChildren();
     if (!state.requests.length) {
       const empty = make("div", "detail-placeholder");
-      empty.append(make("span", "", "✓"), make("h3", "", "这一栏清空了"), make("p", "", "此刻，你是一个没有积压的高性能人类。"));
+      empty.append(make("span", "", "✓"), make("h3", "", "队列已经清空"), make("p", "", "当前没有需要处理的请求。"));
       list.append(empty);
       return;
     }
@@ -309,7 +331,14 @@
       row.append(head, make("p", "", item.preview));
 
       const foot = make("div", "request-row-foot");
-      foot.append(make("span", "", item.source === "web_chat" ? "访客聊天" : "API"));
+      const sourceLabels = {
+        web_chat: "访客聊天",
+        openai_responses: "OpenAI Responses",
+        anthropic_messages: "Claude Messages",
+        gemini_generate_content: "Gemini Content",
+        api: "OpenAI Chat",
+      };
+      foot.append(make("span", "", sourceLabels[item.source] || "API"));
       if (item.conversation_id) foot.append(make("span", "", "有上下文"));
       if (item.stream_requested || item.stream_chunk_count) {
         const segmentLabel = item.stream_requested ? "直播中" : "回答中";
@@ -504,20 +533,20 @@
       const presence = make("div", `request-presence ${item.client_connected ? "online" : "offline"}`);
       presence.id = "request-presence";
       presence.textContent = item.client_connected
-        ? "● 对面还在线 · 你发出的 chunk 会马上抵达"
+        ? "● 客户端在线 · 你发出的 chunk 会立即送达"
         : item.client_last_seen_at
-          ? "○ 对面可能已断开 · 回答仍会保留，别对空气狂飙太久"
+          ? "○ 客户端可能已断开 · 响应仍会保存并可稍后查询"
           : "○ 暂时没收到客户端心跳 · API 调用方可能正在轮询";
       shell.append(presence);
       if (item.auto_reply_due_at) {
         const seconds = Math.max(0, Math.ceil((item.auto_reply_due_at - Date.now()) / 1000));
-        shell.append(make("div", "auto-countdown", `⚡「${item.auto_reply_label}」已接管，约 ${seconds} 秒后自动回复。你现在提交会优先采用真人回答。`));
+        shell.append(make("div", "auto-countdown", `⚡「${item.auto_reply_label}」将在约 ${seconds} 秒后自动发送。现在手动提交会取消该规则。`));
       }
       if (item.claimConflict) {
         const conflict = make("div", "claim-conflict");
         conflict.append(
           make("strong", "", "另一张后台正在打字"),
-          make("p", "", "为防止人类模型突然双重人格，这里先只读。对方离开后可以重新接管。")
+          make("p", "", "这个请求正在另一个控制台标签页中处理。接管释放后即可继续。")
         );
         const retry = make("button", "soft-action", "重新尝试接管");
         retry.type = "button";
@@ -538,7 +567,7 @@
       answered.prepend(make("p", "eyebrow", `${who} · ${formatTime(item.answered_at)}`));
       shell.append(answered);
     } else {
-      shell.append(make("div", "answered-box", "这个请求已经过期。人类偶尔错过消息，服务器对此表示理解。"));
+      shell.append(make("div", "answered-box", "这个请求已经过期，无法再提交响应。"));
     }
     $("#request-detail").replaceChildren(shell);
   }
@@ -556,7 +585,7 @@
       const title = make("div");
       title.append(
         make("span", "live-stream-dot", "LIVE"),
-        make("strong", "", isRealtimeStream ? " 真人正在流" : " 真人分段作答")
+        make("strong", "", isRealtimeStream ? " 流式响应进行中" : " 分段响应")
       );
       streamCounter = make("span", "live-stream-counter");
       const liveMeta = make("div", "live-stream-meta");
@@ -620,7 +649,7 @@
     textarea.maxLength = 50_000;
     textarea.placeholder = isSegmentedReply
       ? (isRealtimeStream
-        ? "写第一段，按 Enter 就会立刻流给对面……"
+        ? "写第一段，按 Enter 就会立即发送给客户端……"
         : "写第一段，按 Enter 生成 chunk；空回车结束……")
       : "输入你真正想说的话……（Enter 发送，Shift + Enter 换行）";
     textarea.value = readDraft(item.id);
@@ -700,7 +729,7 @@
         draftStatus.textContent = textarea.value
           ? "草稿已自动保存 · Enter 发送 · Shift + Enter 换行"
           : "Enter 发送 · Shift + Enter 换行 · J/K 切换问题";
-        submit.textContent = "发送真人回复 →";
+        submit.textContent = "提交响应 →";
       }
     }
     textarea.addEventListener("input", () => {
@@ -744,7 +773,7 @@
         return;
       }
       if (!isSegmentedReply && responseType === "text" && !hasText) {
-        toast("先写点什么再发送，人类模型暂不支持意念输出。", true);
+        toast("请先输入一段内容再发送。", true);
         textarea.focus();
         return;
       }
@@ -966,24 +995,356 @@
     $("#schedule-rule-fields").hidden = !scheduled;
   }
 
+  function renderIntegration(protocol = null) {
+    const root = location.origin;
+    const openaiBase = `${root}/v1`;
+    const model = document.querySelector(".admin-console")?.dataset.modelName || "your-model";
+    const activeButton = protocol
+      ? $(`[data-integration-protocol="${protocol}"]`)
+      : $("[data-integration-protocol].active");
+    const selected = protocol || activeButton?.dataset.integrationProtocol || "openai";
+    const examples = {
+      openai: {
+        language: "PYTHON · OPENAI",
+        title: "OpenAI SDK",
+        code: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${openaiBase}",\n    api_key="sk-your-api-key",\n)\n\nresponse = client.responses.create(\n    model="${model}",\n    input="Hello from the OpenAI SDK",\n)\nprint(response.output_text)`,
+      },
+      claude: {
+        language: "SHELL · CLAUDE CODE",
+        title: "Claude Code",
+        code: `export ANTHROPIC_BASE_URL="${root}"\nexport ANTHROPIC_AUTH_TOKEN="sk-your-api-key"\n\n# 从同一个终端启动，让 Claude Code 继承配置\nclaude\n\n# 进入后运行 /status，确认 Anthropic base URL`,
+      },
+      gemini: {
+        language: "PYTHON · GOOGLE GENAI",
+        title: "Google Gemini",
+        code: `from google import genai\nfrom google.genai import types\n\nclient = genai.Client(\n    api_key="sk-your-api-key",\n    http_options=types.HttpOptions(\n        base_url="${root}",\n        api_version="v1beta",\n    ),\n)\n\nresponse = client.models.generate_content(\n    model="gemini-compatible",\n    contents="Hello from Gemini",\n)\nprint(response.text)`,
+      },
+      curl: {
+        language: "SHELL · REST",
+        title: "cURL / Responses API",
+        code: `curl ${openaiBase}/responses \\\n  -H "Authorization: Bearer sk-your-api-key" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "${model}",\n    "input": "Hello from curl"\n  }'`,
+      },
+    };
+    const example = examples[selected] || examples.openai;
+    $("#overview-api-base").textContent = openaiBase;
+    $("#integration-root").textContent = root;
+    $("#integration-openai-base").textContent = openaiBase;
+    $("#integration-model").textContent = model;
+    $("#integration-language").textContent = example.language;
+    $("#integration-title").textContent = example.title;
+    $("#integration-code").textContent = example.code;
+    $$('[data-integration-protocol]').forEach((button) => {
+      button.classList.toggle("active", button.dataset.integrationProtocol === selected);
+    });
+  }
+
+  function preferredPublicRoot() {
+    const configured = root.dataset.publicBaseUrl?.trim();
+    return (configured || location.origin).replace(/\/+$/, "");
+  }
+
+  function shareCardData() {
+    if (!state.lastCreatedKey) return null;
+    const baseInput = $("#share-card-base-input");
+    const base = (baseInput.value.trim() || preferredPublicRoot()).replace(/\/+$/, "");
+    const item = state.lastCreatedKey.item;
+    return {
+      name: item.name,
+      key: state.lastCreatedKey.key,
+      model: root.dataset.modelName || "your-model",
+      root: base,
+      openaiBase: `${base}/v1`,
+      limits: `每分钟 ${item.rate_limit_per_minute} 次 · 每日 ${item.daily_limit} 次 · 同时等待 ${item.max_concurrent} 个`,
+    };
+  }
+
+  function renderShareCard() {
+    const data = shareCardData();
+    if (!data) return;
+    $("#share-card-name").textContent = data.name;
+    $("#share-card-openai-base").textContent = data.openaiBase;
+    $("#share-card-root").textContent = data.root;
+    $("#new-api-key-secret").textContent = data.key;
+    $("#share-card-model").textContent = data.model;
+    $("#share-card-limits").textContent = data.limits;
+  }
+
+  function openShareCard(result) {
+    state.lastCreatedKey = result;
+    $("#share-card-base-input").value = preferredPublicRoot();
+    renderShareCard();
+    $("#api-key-reveal-dialog").showModal();
+  }
+
+  function drawRoundedRect(context, x, y, width, height, radius, fill, stroke = null) {
+    const r = Math.min(radius, width / 2, height / 2);
+    context.beginPath();
+    context.moveTo(x + r, y);
+    context.lineTo(x + width - r, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + r);
+    context.lineTo(x + width, y + height - r);
+    context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    context.lineTo(x + r, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - r);
+    context.lineTo(x, y + r);
+    context.quadraticCurveTo(x, y, x + r, y);
+    context.closePath();
+    if (fill) { context.fillStyle = fill; context.fill(); }
+    if (stroke) { context.strokeStyle = stroke; context.lineWidth = 2; context.stroke(); }
+  }
+
+  function fitCanvasText(context, value, maxWidth, preferredSize, minimumSize = 22, family = '"SFMono-Regular", Menlo, monospace') {
+    let size = preferredSize;
+    while (size > minimumSize) {
+      context.font = `600 ${size}px ${family}`;
+      if (context.measureText(value).width <= maxWidth) break;
+      size -= 2;
+    }
+    return size;
+  }
+
+  function createShareCardCanvas(data) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1600;
+    canvas.height = 1000;
+    const context = canvas.getContext("2d");
+    const gradient = context.createLinearGradient(0, 0, 1600, 1000);
+    gradient.addColorStop(0, "#111522");
+    gradient.addColorStop(1, "#1b2140");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    context.globalAlpha = 0.18;
+    context.fillStyle = "#7c86ff";
+    context.beginPath(); context.arc(1470, 90, 330, 0, Math.PI * 2); context.fill();
+    context.fillStyle = "#66d6a8";
+    context.beginPath(); context.arc(80, 1030, 300, 0, Math.PI * 2); context.fill();
+    context.globalAlpha = 1;
+
+    drawRoundedRect(context, 78, 70, 62, 62, 18, "#cfd4ff");
+    context.fillStyle = "#20284f";
+    context.font = '800 34px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.textAlign = "center";
+    context.fillText("I", 109, 112);
+    context.textAlign = "left";
+    context.fillStyle = "#ffffff";
+    context.font = '750 32px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("iamllm", 160, 99);
+    context.fillStyle = "#929bbf";
+    context.font = '700 16px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("API ACCESS PASS", 160, 126);
+    context.textAlign = "right";
+    context.fillStyle = "#abb3d8";
+    context.font = '700 18px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("OPENAI  ·  CLAUDE  ·  GEMINI", 1520, 108);
+    context.textAlign = "left";
+
+    context.fillStyle = "#7f89b1";
+    context.font = '800 17px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("ACCESS FOR", 80, 218);
+    context.fillStyle = "#ffffff";
+    fitCanvasText(context, data.name, 1360, 70, 42, '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif');
+    context.fillText(data.name, 80, 292);
+    context.fillStyle = "#a7afcc";
+    context.font = '400 24px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("一把钥匙，接入你已经在用的客户端。", 80, 337);
+
+    const drawValueCard = (x, y, width, height, label, value, accent = false) => {
+      drawRoundedRect(context, x, y, width, height, 24, accent ? "#252d57" : "rgba(255,255,255,.055)", accent ? "#515d9d" : "rgba(255,255,255,.11)");
+      context.fillStyle = accent ? "#9ea9ff" : "#8992b3";
+      context.font = '800 16px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      context.fillText(label, x + 28, y + 40);
+      context.fillStyle = "#f2f4ff";
+      fitCanvasText(context, value, width - 56, accent ? 34 : 30, 20);
+      context.fillText(value, x + 28, y + 92);
+    };
+    drawValueCard(80, 390, 700, 132, "OPENAI BASE URL", data.openaiBase);
+    drawValueCard(820, 390, 700, 132, "CLAUDE / GEMINI BASE", data.root);
+    drawValueCard(80, 552, 1440, 146, "API KEY", data.key, true);
+    drawValueCard(80, 728, 700, 132, "MODEL", data.model);
+    drawValueCard(820, 728, 700, 132, "LIMITS", data.limits);
+
+    context.fillStyle = "#939bb9";
+    context.font = '500 18px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("Authorization: Bearer API_KEY  ·  x-api-key: API_KEY  ·  x-goog-api-key: API_KEY", 80, 928);
+    context.textAlign = "right";
+    context.fillStyle = "#f1c88f";
+    context.font = '700 18px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    context.fillText("包含完整 API Key，请私下分享", 1520, 928);
+    return canvas;
+  }
+
+  async function downloadShareCard() {
+    const data = shareCardData();
+    if (!data) return;
+    const button = $("#download-share-card");
+    button.disabled = true;
+    try {
+      const canvas = createShareCardCanvas(data);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("浏览器没有生成图片，请重试");
+      const link = document.createElement("a");
+      const safeName = data.name.replace(/[^\w\u4e00-\u9fff-]+/g, "-").replace(/^-|-$/g, "") || "access";
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = `iamllm-${safeName}-接入卡.png`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      toast("接入卡 PNG 已下载，请私下发送", false);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function copyShareCardText() {
+    const data = shareCardData();
+    if (!data) return;
+    await copyText(
+      `${data.name} · API 接入信息\n\nOpenAI Base URL: ${data.openaiBase}\nClaude / Gemini Base: ${data.root}\nAPI Key: ${data.key}\nModel: ${data.model}\nLimits: ${data.limits}\n\n此信息包含完整 API Key，请勿公开转发。`,
+      "完整接入信息已复制"
+    );
+  }
+
+  async function loadApiKeys() {
+    const list = $("#api-key-list");
+    list.setAttribute("aria-busy", "true");
+    try {
+      const data = await api("/admin/api/api-keys");
+      state.apiKeys = data.items;
+      renderApiKeys();
+    } catch (error) {
+      list.replaceChildren(make("div", "panel-loading", error.message));
+    } finally {
+      list.removeAttribute("aria-busy");
+    }
+  }
+
+  function renderApiKeys() {
+    const list = $("#api-key-list");
+    list.replaceChildren();
+    const active = state.apiKeys.filter((item) => item.active && !item.revoked).length;
+    const today = state.apiKeys.reduce((sum, item) => sum + Number(item.usage_today || 0), 0);
+    const pending = state.apiKeys.reduce((sum, item) => sum + Number(item.pending_requests || 0), 0);
+    $("#key-active-count").textContent = active;
+    $("#key-usage-today").textContent = today;
+    $("#key-pending-count").textContent = pending;
+
+    state.apiKeys.forEach((item) => {
+      const card = make("article", `api-key-card key-${item.status}${item.managed ? "" : " key-master"}`);
+      const head = make("div", "api-key-card-head");
+      const identity = make("div");
+      const title = make("div", "api-key-title");
+      title.append(
+        make("h3", "", item.name),
+        make("span", `key-status key-status-${item.status}`, {
+          active: item.managed ? "可调用" : "总钥匙",
+          paused: "已暂停",
+          revoked: "已撤销",
+        }[item.status])
+      );
+      identity.append(title, make("code", "api-key-hint", item.key_hint));
+      head.append(identity);
+
+      const actions = make("div", "api-key-actions");
+      if (item.managed && !item.revoked) {
+        const toggle = make("button", "soft-action", item.active ? "暂停" : "恢复");
+        toggle.type = "button";
+        toggle.addEventListener("click", () => toggleApiKey(item));
+        const edit = make("button", "soft-action", "调整额度");
+        edit.type = "button";
+        edit.addEventListener("click", () => openApiKeyDialog(item));
+        const revoke = make("button", "danger-action", "永久撤销");
+        revoke.type = "button";
+        revoke.addEventListener("click", () => revokeApiKey(item));
+        actions.append(toggle, edit, revoke);
+      } else if (!item.managed) {
+        actions.append(make("span", "key-readonly", "由部署环境保管"));
+      }
+      head.append(actions);
+      card.append(head);
+
+      const metrics = make("dl", "api-key-metrics");
+      const values = item.unlimited
+        ? [["分钟额度", "不限"], ["今日调用", "不统计"], ["同时等待", "不限"], ["最后出现", "随时可能"]]
+        : [
+          ["分钟额度", `${item.usage_minute} / ${item.rate_limit_per_minute}`],
+          ["今日调用", `${item.usage_today} / ${item.daily_limit}`],
+          ["同时等待", `${item.pending_requests} / ${item.max_concurrent}`],
+          ["最后调用", item.last_used_at ? formatTime(item.last_used_at) : "还没用过"],
+        ];
+      values.forEach(([label, value]) => {
+        const metric = make("div");
+        metric.append(make("dt", "", label), make("dd", "", value));
+        metrics.append(metric);
+      });
+      card.append(metrics);
+      if (item.revoked) {
+        card.append(make("p", "key-card-note", `这把钥匙已于 ${formatTime(item.revoked_at)} 永久退役。`));
+      } else if (!item.managed) {
+        card.append(make("p", "key-card-note", "它能打开所有门，也没有限速。别把总钥匙塞进公开仓库。"));
+      }
+      list.append(card);
+    });
+  }
+
+  function openApiKeyDialog(item = null) {
+    const form = $("#api-key-form");
+    form.reset();
+    form.elements.id.value = item?.id || "";
+    form.elements.name.value = item?.name || "";
+    form.elements.rate_limit_per_minute.value = item?.rate_limit_per_minute ?? 10;
+    form.elements.daily_limit.value = item?.daily_limit ?? 100;
+    form.elements.max_concurrent.value = item?.max_concurrent ?? 3;
+    form.elements.active.checked = item?.active ?? true;
+    $("#api-key-active-row").hidden = !item;
+    $("#api-key-dialog-title").textContent = item ? `调整「${item.name}」` : "生成访问密钥";
+    $("#api-key-submit").textContent = item ? "保存设置" : "生成密钥";
+    $("#api-key-dialog").showModal();
+  }
+
+  async function toggleApiKey(item) {
+    try {
+      await api(`/admin/api/api-keys/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: { active: !item.active },
+      });
+      toast(item.active ? "密钥已暂停，客户端会收到 401" : "密钥已恢复", false);
+      await loadApiKeys();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function revokeApiKey(item) {
+    if (!confirm(`永久撤销「${item.name}」？撤销后不能恢复，复制过的钥匙也会立刻失效。`)) return;
+    try {
+      await api(`/admin/api/api-keys/${encodeURIComponent(item.id)}/revoke`, { method: "POST" });
+      toast("钥匙已永久撤销。门还在，但这把钥匙已经变成纪念品。", false);
+      await loadApiKeys();
+    } catch (error) { toast(error.message, true); }
+  }
+
   function populateProfile(profile) {
     const form = $("#profile-form");
     form.elements.display_name.value = profile.display_name;
     form.elements.bio.value = profile.bio;
     form.elements.availability.value = profile.availability;
-    form.elements.skills.value = profile.skills.join("\n");
     renderProfilePreview();
+  }
+
+  function renderServiceSettings() {
+    populateProfile(state.profile);
+    $("#settings-api-base").textContent = `${preferredPublicRoot()}/v1`;
   }
 
   function renderProfilePreview() {
     const form = $("#profile-form");
-    const name = form.elements.display_name.value.trim() || "匿名人类";
+    const name = form.elements.display_name.value.trim() || "未命名模型";
     $("#preview-avatar").textContent = [...name][0] || "人";
     $("#preview-name").textContent = name;
-    $("#preview-bio").textContent = form.elements.bio.value.trim() || "正在组织一句像样的自我介绍。";
-    $("#preview-availability").textContent = form.elements.availability.value.trim() || "行踪不明，但消息收得到";
-    const skills = form.elements.skills.value.split("\n").map((item) => item.trim()).filter(Boolean);
-    $("#preview-skills").replaceChildren(...skills.map((skill) => make("span", "", skill)));
+    $("#preview-availability").textContent = form.elements.availability.value.trim() || "未设置状态说明";
   }
 
   async function saveProfile(event) {
@@ -998,12 +1359,12 @@
           display_name: form.elements.display_name.value.trim(),
           bio: form.elements.bio.value.trim(),
           availability: form.elements.availability.value.trim(),
-          skills: form.elements.skills.value.split("\n").map((item) => item.trim()).filter(Boolean),
+          skills: state.profile?.skills || [],
         },
       });
       state.profile = data;
-      $("#profile-status").textContent = "已保存，访客页同步生效";
-      toast("人类设定已保存。人格加载完成。", false);
+      $("#profile-status").textContent = "已同步到 Playground 与 /v1/models";
+      toast("服务展示设置已保存。", false);
       await loadOverview();
     } catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }
@@ -1036,6 +1397,15 @@
 
   function bindEvents() {
     $$(".console-nav button[data-section]").forEach((button) => button.addEventListener("click", () => { location.hash = `#${button.dataset.section}`; }));
+    $$('[data-integration-protocol]').forEach((button) => {
+      button.addEventListener("click", () => renderIntegration(button.dataset.integrationProtocol));
+    });
+    $$('[data-copy-target]').forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = document.getElementById(button.dataset.copyTarget);
+        if (target) copyText(target.textContent.trim(), "已复制到剪贴板");
+      });
+    });
     $("#test-notification").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -1068,6 +1438,7 @@
     });
     $("#new-quick").addEventListener("click", () => openQuickDialog());
     $("#new-rule").addEventListener("click", () => openRuleDialog());
+    $("#new-api-key").addEventListener("click", () => openApiKeyDialog());
     $("#rule-preview-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const text = event.currentTarget.elements.text.value.trim();
@@ -1128,6 +1499,48 @@
       } catch (error) { toast(error.message, true); }
     });
 
+    $("#api-key-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const id = form.elements.id.value;
+      const body = {
+        name: form.elements.name.value.trim(),
+        rate_limit_per_minute: Number(form.elements.rate_limit_per_minute.value),
+        daily_limit: Number(form.elements.daily_limit.value),
+        max_concurrent: Number(form.elements.max_concurrent.value),
+      };
+      if (id) body.active = form.elements.active.checked;
+      const submit = $("#api-key-submit");
+      submit.disabled = true;
+      try {
+        const result = await api(
+          id ? `/admin/api/api-keys/${encodeURIComponent(id)}` : "/admin/api/api-keys",
+          { method: id ? "PATCH" : "POST", body }
+        );
+        $("#api-key-dialog").close();
+        if (!id) {
+          openShareCard(result);
+        } else {
+          toast("钥匙设置已保存，限速器重新校准。", false);
+        }
+        await loadApiKeys();
+      } catch (error) { toast(error.message, true); }
+      finally { submit.disabled = false; }
+    });
+
+    $("#copy-api-key").addEventListener("click", async () => {
+      const secret = state.lastCreatedKey?.key || "";
+      if (!secret) return;
+      await copyText(secret, "API Key 已复制，请妥善保存");
+    });
+    $("#copy-share-card-text").addEventListener("click", copyShareCardText);
+    $("#download-share-card").addEventListener("click", downloadShareCard);
+    $("#share-card-base-input").addEventListener("input", renderShareCard);
+    $("#api-key-reveal-dialog").addEventListener("close", () => {
+      state.lastCreatedKey = null;
+      $("#new-api-key-secret").textContent = "—";
+    });
+
     window.addEventListener("hashchange", () => showSection(currentRoute().section));
   }
 
@@ -1154,9 +1567,9 @@
         badge.classList.toggle("online", presence.client_connected);
         badge.classList.toggle("offline", !presence.client_connected);
         badge.textContent = presence.client_connected
-          ? "● 对面还在线 · 你发出的 chunk 会马上抵达"
+          ? "● 客户端在线 · 你发出的 chunk 会立即送达"
           : presence.client_last_seen_at
-            ? "○ 对面可能已断开 · 回答仍会保留，别对空气狂飙太久"
+            ? "○ 客户端可能已断开 · 响应仍会保存并可稍后查询"
             : "○ 暂时没收到客户端心跳 · API 调用方可能正在轮询";
       }
       const ownedElsewhere = presence.claim_active && presence.claim_owner !== state.operatorId;
@@ -1201,7 +1614,7 @@
       const overview = await loadOverview({ silent: true });
       if (overview) {
         indicator.classList.remove("offline");
-        indicator.lastChild.textContent = " 真人神经在线";
+        indicator.lastChild.textContent = " 服务在线";
         if (lastVersion !== null && overview.queue_version !== lastVersion) {
           const route = currentRoute();
           if (route.section === "inbox") {
@@ -1245,8 +1658,9 @@
   async function init() {
     buildWeekdayPicker();
     bindEvents();
+    renderIntegration("openai");
     await Promise.all([loadOverview(), loadAutomation()]);
-    populateProfile(state.profile);
+    renderServiceSettings();
     showSection(currentRoute().section);
     startRealtimeSync();
   }
