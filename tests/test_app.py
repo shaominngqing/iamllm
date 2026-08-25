@@ -823,6 +823,7 @@ def test_anthropic_messages_supports_native_auth_blocks_and_tool_use(
 ) -> None:
     app = create_app(build_settings(tmp_path))
     auth = {"x-api-key": "test-api-key", "anthropic-version": "2023-06-01"}
+    long_tool_description = "Claude Code 工具说明。" * 300
 
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
@@ -852,7 +853,7 @@ def test_anthropic_messages_supports_native_auth_blocks_and_tool_use(
                 "tools": [
                     {
                         "name": "save_note",
-                        "description": "保存笔记",
+                        "description": long_tool_description,
                         "input_schema": {
                             "type": "object",
                             "properties": {"text": {"type": "string"}},
@@ -874,6 +875,7 @@ def test_anthropic_messages_supports_native_auth_blocks_and_tool_use(
         stored = app.state.database.get_request(request_id)
         assert stored is not None
         assert stored["source"] == "anthropic_messages"
+        assert stored["tools"][0]["function"]["description"] == long_tool_description
         assert stored["messages"][1]["content"][1]["image_url"]["url"].startswith(
             "data:image/png;base64,"
         )

@@ -65,7 +65,11 @@ class FunctionDefinition(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
-    description: str | None = Field(default=None, max_length=2_000)
+    # Agent clients such as Claude Code embed substantial operating guidance in
+    # built-in tool descriptions. Keep a defensive ceiling, but do not impose
+    # the much smaller limits used by some upstream model providers: this
+    # service stores and presents the tools rather than forwarding them there.
+    description: str | None = Field(default=None, max_length=100_000)
     parameters: dict[str, Any] = Field(default_factory=dict)
     strict: bool | None = None
 
