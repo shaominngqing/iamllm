@@ -161,6 +161,70 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
         assert detail.headers.get("content-encoding") == "gzip"
 
 
+def test_request_summary_extracts_real_prompt_and_classifies_background_work(
+    tmp_path: Path,
+) -> None:
+    app = create_app(build_settings(tmp_path))
+    envelope = """# Files mentioned by the user:
+
+## screenshot.png: /tmp/screenshot.png
+
+## My request:
+帮我看看这个页面为什么会重复显示
+<image name=[Image #1] path=\"/tmp/screenshot.png\">
+</image>
+"""
+
+    with TestClient(app) as client:
+        conversation = app.state.database.create_request(
+            request_id="req_envelope",
+            model="test-human",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": envelope},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                        },
+                    ],
+                }
+            ],
+            mode="async",
+            expires_at=int(time.time()) + 3_600,
+            source="openai_responses",
+        )
+        assert conversation["preview"] == "帮我看看这个页面为什么会重复显示"
+        assert conversation["request_kind"] == "conversation"
+        assert conversation["attachment_count"] == 1
+
+        memory = app.state.database.create_request(
+            request_id="req_memory",
+            model="test-human",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Analyze this rollout and produce JSON with `raw_memory`, "
+                        "`rollout_summary`, and `rollout_slug`."
+                    ),
+                }
+            ],
+            mode="async",
+            expires_at=int(time.time()) + 3_600,
+            source="openai_responses",
+        )
+        assert memory["request_kind"] == "memory"
+
+        login_admin(client)
+        listing = client.get("/admin/api/requests?filter=all").json()["items"]
+        summary = next(item for item in listing if item["id"] == "req_envelope")
+        assert summary["preview"] == "帮我看看这个页面为什么会重复显示"
+        assert summary["attachment_count"] == 1
+        assert summary["request_kind"] == "conversation"
+
+
 def test_existing_request_rows_backfill_short_summaries(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     with sqlite3.connect(settings.database_path) as connection:
@@ -583,6 +647,11 @@ def test_openai_responses_non_stream_supports_items_images_and_tools(
                                 "type": "input_image",
                                 "image_url": "data:image/png;base64,iVBORw0KGgo=",
                             },
+                            {
+                                "type": "input_file",
+                                "filename": "说明书.pdf",
+                                "file_data": "data:application/pdf;base64,JVBERi0xLjQ=",
+                            },
                         ],
                     }
                 ],
@@ -614,6 +683,9 @@ def test_openai_responses_non_stream_supports_items_images_and_tools(
         assert stored["model"] == "gpt-compatible-alias"
         assert stored["messages"][0]["role"] == "system"
         assert stored["messages"][1]["content"][1]["type"] == "image_url"
+        assert stored["messages"][1]["content"][2]["type"] == "file"
+        assert stored["messages"][1]["content"][2]["file"]["filename"] == "说明书.pdf"
+        assert stored["attachment_count"] == 2
         assert stored["tools"][0]["function"]["name"] == "save_note"
 
         assert app.state.database.answer_request(
@@ -1372,6 +1444,9 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         login_admin(client)
         dashboard = client.get("/admin")
         assert dashboard.status_code == 200
+        assert "会话工作台" in dashboard.text
+        assert "像用户一样阅读聊天" in dashboard.text
+        assert "admin.js?v=20260825d" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text

@@ -12,7 +12,7 @@
 
     <nav class="console-nav" aria-label="控制台导航">
       <button type="button" data-section="cockpit" class="active"><span>⌂</span><b>概览</b></button>
-      <button type="button" data-section="inbox"><span>↳</span><b>请求队列</b><em id="nav-pending">0</em></button>
+      <button type="button" data-section="inbox"><span>↳</span><b>会话工作台</b><em id="nav-pending">0</em></button>
       <button type="button" data-section="keys"><span>⌘</span><b>API 密钥</b></button>
       <button type="button" data-section="integration"><span>&lt;/&gt;</span><b>接入指南</b></button>
       <button type="button" data-section="automation"><span>⚡</span><b>自动回复</b></button>
@@ -61,7 +61,7 @@
         </article>
 
         <div class="metric-grid" aria-label="今日概览">
-          <article class="metric-card metric-warm"><span>等待处理</span><strong id="metric-pending">—</strong><small>当前队列中的请求</small></article>
+          <article class="metric-card metric-warm"><span>等待处理</span><strong id="metric-pending">—</strong><small>已合并的会话任务</small></article>
           <article class="metric-card"><span>今日完成</span><strong id="metric-answered">—</strong><small>已返回给客户端</small></article>
           <article class="metric-card"><span>自动完成</span><strong id="metric-automated">—</strong><small>由规则直接处理</small></article>
           <article class="metric-card"><span>平均响应时间</span><strong id="metric-latency">—</strong><small>从入队到完成</small></article>
@@ -89,7 +89,7 @@
             </div>
             <div class="inline-actions">
               <button type="button" class="soft-action" data-go="integration">复制接入代码</button>
-              <button type="button" class="soft-action" data-go="inbox">查看请求队列</button>
+              <button type="button" class="soft-action" data-go="inbox">打开会话工作台</button>
             </div>
           </article>
         </div>
@@ -97,7 +97,7 @@
 
       <section class="console-section" data-panel="inbox">
         <div class="section-toolbar">
-          <div><h2>请求队列</h2><p>查看完整上下文、图片与工具调用，并把响应分段发送给客户端。</p></div>
+          <div><h2>会话工作台</h2><p>像用户一样阅读聊天；内部步骤、工具和附件在需要时再展开。</p></div>
           <div class="inbox-toolbar-actions">
             <label class="auto-open-control" title="空闲时有新问题，会自动在右侧打开">
               <input type="checkbox" id="auto-open-requests" checked>
@@ -117,11 +117,11 @@
           <em>现在查看 →</em>
         </button>
         <div class="inbox-workspace">
-          <aside class="inbox-list" id="request-list" aria-label="问题列表">
-            <div class="panel-loading">正在同步请求队列……</div>
+          <aside class="inbox-list" id="request-list" aria-label="会话任务列表">
+            <div class="panel-loading">正在整理会话任务……</div>
           </aside>
           <section class="inbox-detail" id="request-detail">
-            <div class="detail-placeholder"><span>↳</span><h3>选择一个请求</h3><p>上下文、附件与回复工具会显示在这里。</p></div>
+            <div class="detail-placeholder"><span>↳</span><h3>选择一个会话</h3><p>聊天记录、附件和运行过程会显示在这里。</p></div>
           </section>
         </div>
       </section>
@@ -364,4 +364,4 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='/admin.js') }}?v=20260825c" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/admin.js') }}?v=20260825d" defer></script>{% endblock %}

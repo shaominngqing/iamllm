@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -42,6 +43,8 @@ class Database:
                     message_count INTEGER NOT NULL DEFAULT 0,
                     system_count INTEGER NOT NULL DEFAULT 0,
                     tool_count INTEGER NOT NULL DEFAULT 0,
+                    attachment_count INTEGER NOT NULL DEFAULT 0,
+                    request_kind TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL CHECK (
                         status IN ('pending', 'answered', 'expired')
                     ),
@@ -261,6 +264,18 @@ class Database:
                 "tool_count",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "attachment_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "request_kind",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             self._backfill_request_summaries(connection)
             connection.execute(
                 """
@@ -378,7 +393,7 @@ class Database:
             """
             SELECT id, messages_json, tools_json
             FROM human_requests
-            WHERE preview = '' OR context_chars = 0
+            WHERE preview = '' OR context_chars = 0 OR request_kind = ''
             """
         ).fetchall()
         for row in rows:
@@ -389,7 +404,8 @@ class Database:
                 """
                 UPDATE human_requests
                 SET preview = ?, context_chars = ?, message_count = ?,
-                    system_count = ?, tool_count = ?
+                    system_count = ?, tool_count = ?, attachment_count = ?,
+                    request_kind = ?
                 WHERE id = ?
                 """,
                 (
@@ -398,6 +414,8 @@ class Database:
                     summary["message_count"],
                     summary["system_count"],
                     summary["tool_count"],
+                    summary["attachment_count"],
+                    summary["request_kind"],
                     row["id"],
                 ),
             )
@@ -1110,14 +1128,15 @@ class Database:
                 """
                 INSERT INTO human_requests (
                     id, model, messages_json, preview, context_chars,
-                    message_count, system_count, tool_count,
+                    message_count, system_count, tool_count, attachment_count,
+                    request_kind,
                     status, answer, mode,
                     created_at, answered_at, expires_at, conversation_id,
                     tools_json, response_json, source, updated_at,
                     auto_reply_rule_id, auto_reply_due_at, auto_reply_label,
                     auto_reply_text, answer_source, stream_requested,
                     stream_chunk_count, api_key_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_id,
@@ -1128,6 +1147,8 @@ class Database:
                     summary["message_count"],
                     summary["system_count"],
                     summary["tool_count"],
+                    summary["attachment_count"],
+                    summary["request_kind"],
                     "pending",
                     None,
                     mode,
@@ -1435,11 +1456,12 @@ class Database:
         return [self._deserialize_request(row) for row in rows]
 
     def list_request_summaries(
-        self, *, status: str | None = None, limit: int = 100
+        self, *, status: str | None = None, limit: int = 300
     ) -> list[dict[str, Any]]:
         columns = """
             id, model, preview, context_chars, message_count, system_count,
-            tool_count, status, mode, created_at, answered_at, expires_at,
+            tool_count, attachment_count, request_kind, status, mode,
+            created_at, answered_at, expires_at,
             conversation_id, source, updated_at, auto_reply_rule_id,
             auto_reply_due_at, auto_reply_label, answer_source,
             stream_requested, stream_chunk_count, claim_owner,
@@ -1460,7 +1482,13 @@ class Database:
                 rows = connection.execute(
                     f"""
                     SELECT {columns} FROM human_requests
-                    ORDER BY created_at DESC, updated_at DESC
+                    ORDER BY
+                        CASE status
+                            WHEN 'pending' THEN 0
+                            WHEN 'answered' THEN 1
+                            ELSE 2
+                        END,
+                        created_at DESC, updated_at DESC
                     LIMIT ?
                     """,
                     (limit,),
@@ -1765,6 +1793,8 @@ class Database:
         )
         result["system_count"] = int(result.get("system_count") or 0)
         result["tool_count"] = int(result.get("tool_count") or 0)
+        result["attachment_count"] = int(result.get("attachment_count") or 0)
+        result["request_kind"] = result.get("request_kind") or "conversation"
         return result
 
     @staticmethod
@@ -1775,6 +1805,8 @@ class Database:
         result["message_count"] = int(result.get("message_count") or 0)
         result["system_count"] = int(result.get("system_count") or 0)
         result["tool_count"] = int(result.get("tool_count") or 0)
+        result["attachment_count"] = int(result.get("attachment_count") or 0)
+        result["request_kind"] = result.get("request_kind") or "conversation"
         now = _now_ms()
         result["claim_active"] = bool(
             result.get("claim_owner")
@@ -1825,10 +1857,13 @@ class Database:
             image_count = sum(
                 1 for part in content if part.get("type") == "image_url"
             )
+            file_count = sum(1 for part in content if part.get("type") == "file")
             label = " ".join(texts).strip()
             if image_count:
                 label = f"{label} · {image_count} 张图片".strip(" ·")
-            return label or "图片消息"
+            if file_count:
+                label = f"{label} · {file_count} 个文件".strip(" ·")
+            return label or ("附件消息" if file_count else "图片消息")
         if message.get("role") == "tool":
             return "工具返回结果"
         return ""
@@ -1856,12 +1891,81 @@ class Database:
                 continue
             text = cls._message_text(message)
             if text:
-                return cls._short_title(text)
+                return cls._short_title(cls._clean_user_text(text))
         for message in reversed(messages):
             text = cls._message_text(message)
             if text:
                 return cls._short_title(text)
         return "新请求"
+
+    @staticmethod
+    def _clean_user_text(value: str) -> str:
+        text = value.strip()
+        request_marker = re.search(
+            r"^#{1,3}\s*(?:My request|我的请求|用户请求)\s*:\s*$",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        if request_marker:
+            text = text[request_marker.end() :].strip()
+        text = re.sub(r"</?image\b[^>]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"^#{1,3}\s*Files mentioned by the user\s*:\s*$.*?(?=^#{1,3}\s|\Z)",
+            "",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+        ).strip()
+        return text or value.strip()
+
+    @classmethod
+    def _request_kind(cls, messages: list[dict[str, Any]]) -> str:
+        latest = cls._latest_user_text(messages).casefold()
+        if "analyze this rollout and produce json" in latest and "raw_memory" in latest:
+            return "memory"
+        if "generate 0 to 3 hyperpersonalized suggestions" in latest:
+            return "suggestions"
+        if any(
+            marker in latest
+            for marker in (
+                "generate a concise title",
+                "generate a short title",
+                "your job is to generate a title",
+            )
+        ):
+            return "title"
+        if latest.startswith(
+            "you are a helpful assistant. you will be presented with a user prompt"
+        ):
+            return "utility"
+        return "conversation"
+
+    @staticmethod
+    def _attachment_count(messages: list[dict[str, Any]]) -> int:
+        total = 0
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                structured = sum(
+                    1
+                    for part in content
+                    if isinstance(part, dict)
+                    and part.get("type") in {"image_url", "file"}
+                )
+                text = "\n".join(
+                    str(part.get("text") or "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            else:
+                structured = 0
+                text = str(content or "")
+            paths: set[str] = set()
+            for match in re.finditer(
+                r"^##[ \t]+[^\n:]+:[ \t]*(\S.+)$", text, flags=re.MULTILINE
+            ):
+                paths.add(match.group(1).strip())
+            total += max(structured, len(paths))
+        return total
 
     @classmethod
     def _request_summary(
@@ -1885,6 +1989,8 @@ class Database:
                 if message.get("role") in {"system", "developer"}
             ),
             "tool_count": tool_activity,
+            "attachment_count": cls._attachment_count(messages),
+            "request_kind": cls._request_kind(messages),
         }
 
     @staticmethod
@@ -1894,13 +2000,13 @@ class Database:
                 continue
             content = message.get("content")
             if isinstance(content, str):
-                return content.strip()
+                return Database._clean_user_text(content)
             if isinstance(content, list):
-                return " ".join(
+                return Database._clean_user_text(" ".join(
                     str(part.get("text", ""))
                     for part in content
                     if isinstance(part, dict) and part.get("type") == "text"
-                ).strip()
+                ).strip())
         return ""
 
 

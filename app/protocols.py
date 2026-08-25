@@ -119,6 +119,39 @@ def _image_part(block: dict[str, Any]) -> dict[str, Any] | None:
     return {"type": "image_url", "image_url": image_url}
 
 
+def _file_part(block: dict[str, Any]) -> dict[str, Any]:
+    source = block.get("source") if isinstance(block.get("source"), dict) else {}
+    filename = block.get("filename") or source.get("filename")
+    file_id = block.get("file_id") or source.get("file_id")
+    mime_type = (
+        block.get("mime_type")
+        or block.get("media_type")
+        or source.get("mime_type")
+        or source.get("media_type")
+    )
+    url = (
+        block.get("file_url")
+        or block.get("url")
+        or source.get("url")
+    )
+    file_data = block.get("file_data") or source.get("data")
+    if not url and isinstance(file_data, str) and file_data:
+        url = (
+            file_data
+            if file_data.startswith("data:")
+            else f"data:{mime_type or 'application/octet-stream'};base64,{file_data}"
+        )
+    return {
+        "type": "file",
+        "file": {
+            "filename": str(filename) if filename else None,
+            "file_id": str(file_id) if file_id else None,
+            "url": str(url) if url else None,
+            "mime_type": str(mime_type) if mime_type else None,
+        },
+    }
+
+
 def _normal_parts(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, str):
         part = _text_part(content)
@@ -150,11 +183,8 @@ def _normal_parts(content: Any) -> list[dict[str, Any]]:
                 parts.append(
                     {"type": "text", "text": f"[图片文件：{block['file_id']}]"}
                 )
-        elif block_type in {"input_file", "document"}:
-            label = block.get("filename") or block.get("file_id")
-            if not label and isinstance(block.get("source"), dict):
-                label = (block.get("source") or {}).get("url")
-            parts.append({"type": "text", "text": f"[文件：{label or '未命名'}]"})
+        elif block_type in {"input_file", "document", "file"}:
+            parts.append(_file_part(block))
         elif block_type == "message":
             parts.extend(_normal_parts(block.get("content")))
         elif isinstance(block.get("text"), str):
@@ -383,10 +413,13 @@ def _gemini_parts(parts: Any) -> list[dict[str, Any]]:
                 )
             else:
                 normalized.append(
-                    {
-                        "type": "text",
-                        "text": f"[内联媒体：{mime_type or 'unknown'}]",
-                    }
+                    _file_part(
+                        {
+                            "filename": f"inline.{str(mime_type or 'bin').split('/')[-1]}",
+                            "mime_type": mime_type,
+                            "file_data": data,
+                        }
+                    )
                 )
             continue
         file_data = part.get("fileData") or part.get("file_data")
@@ -404,7 +437,12 @@ def _gemini_parts(parts: Any) -> list[dict[str, Any]]:
                 )
             else:
                 normalized.append(
-                    {"type": "text", "text": f"[文件：{uri or mime_type or '未命名'}]"}
+                    _file_part(
+                        {
+                            "file_url": uri,
+                            "mime_type": mime_type,
+                        }
+                    )
                 )
     return normalized
 

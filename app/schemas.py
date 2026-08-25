@@ -28,7 +28,19 @@ class ImageContentPart(BaseModel):
     image_url: ImageURLValue
 
 
-ContentPart = TextContentPart | ImageContentPart
+class FileValue(BaseModel):
+    filename: str | None = Field(default=None, max_length=500)
+    file_id: str | None = Field(default=None, max_length=500)
+    url: str | None = Field(default=None, max_length=8_500_000)
+    mime_type: str | None = Field(default=None, max_length=200)
+
+
+class FileContentPart(BaseModel):
+    type: Literal["file"]
+    file: FileValue
+
+
+ContentPart = TextContentPart | ImageContentPart | FileContentPart
 
 
 class ChatMessage(BaseModel):
