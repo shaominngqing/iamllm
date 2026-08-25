@@ -232,12 +232,52 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
         )
         assert memory["request_kind"] == "memory"
 
+        recap_prompt = (
+            "The user stepped away and is coming back. Recap in under 40 words, "
+            "1-2 plain sentences, no markdown. Lead with the overall goal and current task."
+        )
+        recap = app.state.database.create_request(
+            request_id="req_recap",
+            model="test-human",
+            messages=[
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": "你好，有什么可以帮你？"},
+                {"role": "user", "content": recap_prompt},
+            ],
+            mode="async",
+            expires_at=int(time.time()) + 3_600,
+            source="anthropic_messages",
+        )
+        assert recap["request_kind"] == "recap"
+        assert recap["preview"] == "生成会话回顾"
+
+        # Older rows may have been stored before recap requests were classified.
+        with sqlite3.connect(app.state.database.path) as connection:
+            connection.execute(
+                "UPDATE human_requests SET request_kind = 'conversation', preview = ? "
+                "WHERE id = 'req_recap'",
+                (recap_prompt,),
+            )
+
         login_admin(client)
         listing = client.get("/admin/api/requests?filter=all").json()["items"]
         summary = next(item for item in listing if item["id"] == "req_envelope")
         assert summary["preview"] == "帮我看看这个页面为什么会重复显示"
         assert summary["attachment_count"] == 1
         assert summary["request_kind"] == "conversation"
+
+        recap_summary = next(item for item in listing if item["id"] == "req_recap")
+        assert recap_summary["request_kind"] == "recap"
+        assert recap_summary["preview"] == "生成会话回顾"
+
+        recap_detail = client.get("/admin/api/requests/req_recap").json()
+        assert recap_detail["request_kind"] == "recap"
+        assert recap_detail["preview"] == "生成会话回顾"
+        assert recap_detail["client_internal_count"] == 1
+        assert recap_detail["messages"] == [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好，有什么可以帮你？"},
+        ]
 
 
 def test_existing_request_rows_backfill_short_summaries(tmp_path: Path) -> None:
@@ -1474,7 +1514,7 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         assert dashboard.status_code == 200
         assert "会话工作台" in dashboard.text
         assert "像用户一样阅读聊天" in dashboard.text
-        assert "admin.js?v=20260825f" in dashboard.text
+        assert "admin.js?v=20260825g" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text

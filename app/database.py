@@ -1795,7 +1795,13 @@ class Database:
         result["system_count"] = int(result.get("system_count") or 0)
         result["tool_count"] = int(result.get("tool_count") or 0)
         result["attachment_count"] = int(result.get("attachment_count") or 0)
-        result["request_kind"] = result.get("request_kind") or "conversation"
+        stored_kind = result.get("request_kind") or "conversation"
+        detected_kind = Database._request_kind(result["messages"])
+        result["request_kind"] = (
+            detected_kind if stored_kind == "conversation" else stored_kind
+        )
+        if result["request_kind"] == "recap":
+            result["preview"] = "生成会话回顾"
         return result
 
     @staticmethod
@@ -1807,7 +1813,13 @@ class Database:
         result["system_count"] = int(result.get("system_count") or 0)
         result["tool_count"] = int(result.get("tool_count") or 0)
         result["attachment_count"] = int(result.get("attachment_count") or 0)
-        result["request_kind"] = result.get("request_kind") or "conversation"
+        stored_kind = result.get("request_kind") or "conversation"
+        detected_kind = Database._request_kind_from_text(result.get("preview") or "")
+        result["request_kind"] = (
+            detected_kind if stored_kind == "conversation" else stored_kind
+        )
+        if result["request_kind"] == "recap":
+            result["preview"] = "生成会话回顾"
         now = _now_ms()
         result["claim_active"] = bool(
             result.get("claim_owner")
@@ -1892,6 +1904,8 @@ class Database:
                 continue
             text = cls._message_text(message)
             if text:
+                if cls._request_kind_from_text(text) == "recap":
+                    return "生成会话回顾"
                 return cls._short_title(cls._clean_user_text(text))
         for message in reversed(messages):
             text = cls._message_text(message)
@@ -1920,7 +1934,16 @@ class Database:
 
     @classmethod
     def _request_kind(cls, messages: list[dict[str, Any]]) -> str:
-        latest = cls._latest_user_text(messages).casefold()
+        return cls._request_kind_from_text(cls._latest_user_text(messages))
+
+    @staticmethod
+    def _request_kind_from_text(value: str) -> str:
+        latest = value.casefold().strip()
+        if re.match(
+            r"^the user stepped away and is coming back\.\s*recap in under \d+ words\b",
+            latest,
+        ):
+            return "recap"
         if "analyze this rollout and produce json" in latest and "raw_memory" in latest:
             return "memory"
         if "generate 0 to 3 hyperpersonalized suggestions" in latest:

@@ -161,9 +161,18 @@
     suggestions: { label: "建议生成", short: "建议", icon: "✦" },
     title: { label: "标题生成", short: "标题", icon: "T" },
     utility: { label: "格式整理", short: "整理", icon: "⌁" },
+    recap: {
+      label: "会话回顾",
+      short: "回顾",
+      icon: "↻",
+      description: "Claude Code 在你离开后请求一段短回顾，帮助恢复会话。它不是用户新发来的问题。",
+    },
   };
 
   function requestKind(item) {
+    if (/^The user stepped away and is coming back\.\s*Recap in under \d+ words\b/i.test(item?.preview || "")) {
+      return "recap";
+    }
     return requestKindCopy[item?.request_kind] ? item.request_kind : "conversation";
   }
 
@@ -815,7 +824,8 @@
     if (message?.role !== "user") return false;
     const text = messagePlainText(message).trim();
     return /^<system-reminder(?:\s|>)/i.test(text)
-      || /^SessionStart hook additional context\s*:/i.test(text);
+      || /^SessionStart hook additional context\s*:/i.test(text)
+      || /^The user stepped away and is coming back\.\s*Recap in under \d+ words\b/i.test(text);
   }
 
   function fileNameFromPath(value) {
@@ -1108,7 +1118,7 @@
       );
       $(".utility-copy", utility).append(
         make("strong", "", `这是${copy.label}，不是用户的新消息`),
-        make("p", "", "客户端为了维护记忆、标题或首页建议额外调用了一次模型。它需要一个机器可读结果，但不会显示在用户聊天里。")
+        make("p", "", copy.description || "客户端为了维护记忆、标题或首页建议额外调用了一次模型。它需要一个机器可读结果，但不会显示在用户聊天里。")
       );
       const recommended = recommendedUtilityReply(item);
       if (recommended && item.status === "pending") {

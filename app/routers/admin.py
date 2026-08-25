@@ -65,6 +65,12 @@ def _is_client_internal_message(message: dict[str, Any]) -> bool:
             text,
             flags=re.IGNORECASE,
         )
+        or re.match(
+            r"^\s*The user stepped away and is coming back\.\s*"
+            r"Recap in under \d+ words\b",
+            text,
+            flags=re.IGNORECASE,
+        )
     )
 
 
@@ -73,7 +79,7 @@ def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     messages: list[dict[str, Any]] = []
     client_internal_count = 0
-    if row.get("request_kind", "conversation") == "conversation":
+    if row.get("request_kind", "conversation") in {"conversation", "recap"}:
         for message_index, original in enumerate(row.get("messages") or []):
             if original.get("role") not in {"user", "assistant"}:
                 continue
