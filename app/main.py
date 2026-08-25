@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         database.initialize()
         database.ensure_profile(display_name=settings.model_name)
+        human_requests.process_internal_requests()
         async def automation_worker() -> None:
             while True:
                 database.process_due_auto_replies()

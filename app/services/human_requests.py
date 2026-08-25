@@ -47,6 +47,55 @@ class HumanRequestService:
             )
         )
 
+    @staticmethod
+    def _internal_auto_reply(row: dict[str, Any]) -> str | None:
+        """Return a protocol-safe default for Codex client housekeeping calls."""
+        if row.get("source") != "openai_responses":
+            return None
+        kind = row.get("request_kind")
+        replies = {
+            "memory": (
+                '{"raw_memory":"","rollout_summary":"本轮没有需要长期保存的记忆。",'
+                '"rollout_slug":""}'
+            ),
+            "suggestions": "[]",
+            "title": "新对话",
+            "utility": "[]",
+            "recap": (
+                "Continue the current task using the existing conversation context. "
+                "Await the user's next instruction."
+            ),
+            "bootstrap": "Ready.",
+        }
+        return replies.get(str(kind))
+
+    def _auto_answer_internal(self, row: dict[str, Any]) -> dict[str, Any]:
+        content = self._internal_auto_reply(row)
+        if content is None or row.get("status") != "pending":
+            return row
+        answered = self.database.answer_request(
+            str(row["id"]),
+            {"role": "assistant", "content": content},
+            f"msg_internal_{secrets.token_urlsafe(10)}",
+            answer_source="internal_automation",
+        )
+        if not answered:
+            return row
+        return self.database.get_request(str(row["id"])) or row
+
+    def process_internal_requests(self, *, limit: int = 300) -> int:
+        """Settle housekeeping calls created before this process started."""
+        completed = 0
+        for row in self.database.list_request_summaries(
+            status="pending", limit=limit
+        ):
+            if self._internal_auto_reply(row) is None:
+                continue
+            result = self._auto_answer_internal(row)
+            if result.get("status") == "answered":
+                completed += 1
+        return completed
+
     def _validate_model(
         self, payload: ChatCompletionRequest, *, allow_model_alias: bool
     ) -> None:
@@ -117,5 +166,7 @@ class HumanRequestService:
             stream_requested=stream_requested,
             api_key_id=api_key_id,
         )
-        self.enqueue_new_request_notification(row)
+        row = self._auto_answer_internal(row)
+        if row["status"] == "pending":
+            self.enqueue_new_request_notification(row)
         return row

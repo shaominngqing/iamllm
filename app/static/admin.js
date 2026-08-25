@@ -171,7 +171,7 @@
       label: "会话准备",
       short: "准备",
       icon: "◌",
-      description: "Claude Code 正在载入 skills、项目规则和运行环境。这不是用户的新问题。",
+      description: "客户端正在载入 skills、项目规则和运行环境。这不是用户的新问题。",
     },
   };
 
@@ -828,8 +828,9 @@
 
   function stripClientInternalText(value) {
     const original = String(value || "");
-    const blocks = original.match(/<system-reminder(?:\s[^>]*)?>[\s\S]*?<\/system-reminder>/gi) || [];
-    let text = original.replace(/<system-reminder(?:\s[^>]*)?>[\s\S]*?<\/system-reminder>/gi, "").trim();
+    const pattern = /<(system-reminder|environment_context|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi;
+    const blocks = original.match(pattern) || [];
+    let text = original.replace(pattern, "").trim();
     let hidden = blocks.length;
     if (/^SessionStart hook additional context\s*:/i.test(text)
       || /^The user stepped away and is coming back\.\s*Recap in under \d+ words\b/i.test(text)) {
@@ -1128,8 +1129,8 @@
   }
 
   function prefillComposer(value) {
-    const textMode = $("#request-detail [data-response-mode='text']");
-    textMode?.click();
+    const textModeButton = $("#request-detail [data-response-mode='text']");
+    textModeButton?.click();
     const textarea = $("#request-detail textarea[name='answer']");
     if (!textarea) return;
     textarea.value = value;
@@ -1577,7 +1578,11 @@
         summary = `已调用工具 ${call.function.name}\n${call.function.arguments}`;
       }
       const answered = make("div", "answered-box", summary || "已回答");
-      const who = item.answer_source === "automation" ? "自动挡发送" : "你亲自发送";
+      const who = item.answer_source === "internal_automation"
+        ? "后台自动处理"
+        : item.answer_source === "automation"
+          ? "自动挡发送"
+          : "你亲自发送";
       answered.prepend(make("p", "eyebrow", `${who} · ${formatTime(item.answered_at)}`));
       shell.append(answered);
     } else {
@@ -1830,8 +1835,8 @@
     }
 
     function updateDraftStatus() {
-      const textMode = (typeSelect?.value || "text") === "text";
-      if (isSegmentedReply && textMode) {
+      const isTextResponseMode = (typeSelect?.value || "text") === "text";
+      if (isSegmentedReply && isTextResponseMode) {
         if (textarea.value.trim()) {
           draftStatus.textContent = isRealtimeStream
             ? "这次 Enter 只发送当前这一段"

@@ -45,6 +45,10 @@ class HumanRequestRepository(Protocol):
 
     def get_request(self, request_id: str) -> dict[str, Any] | None: ...
 
+    def list_request_summaries(
+        self, *, status: str | None = None, limit: int = 300
+    ) -> list[dict[str, Any]]: ...
+
     def touch_client_connection(self, request_id: str) -> None: ...
 
     def list_stream_chunks(

@@ -254,6 +254,13 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
                             "type": "text",
                             "text": "<system-reminder>Project memory</system-reminder>",
                         },
+                        {
+                            "type": "text",
+                            "text": (
+                                "<environment_context><cwd>/tmp/project</cwd>"
+                                "</environment_context>"
+                            ),
+                        },
                         {"type": "text", "text": "你好"},
                     ],
                 }
@@ -324,7 +331,7 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
             "/admin/api/requests/req_claude_mixed_prompt"
         ).json()
         assert mixed_detail["preview"] == "你好"
-        assert mixed_detail["client_internal_count"] == 3
+        assert mixed_detail["client_internal_count"] == 4
         assert mixed_detail["messages"] == [
             {
                 "role": "user",
@@ -334,7 +341,7 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
         mixed_raw = client.get(
             "/admin/api/requests/req_claude_mixed_prompt/raw"
         ).json()
-        assert len(mixed_raw["messages"][0]["content"]) == 4
+        assert len(mixed_raw["messages"][0]["content"]) == 5
 
 
 def test_existing_request_rows_backfill_short_summaries(tmp_path: Path) -> None:
@@ -1538,6 +1545,70 @@ def test_keyword_auto_reply_answers_new_job(tmp_path: Path) -> None:
         assert stored["answer_source"] == "automation"
 
 
+def test_codex_housekeeping_requests_are_answered_immediately(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+    auth = {"Authorization": "Bearer test-api-key"}
+    cases = [
+        (
+            "Analyze this rollout and produce JSON with `raw_memory`, "
+            "`rollout_summary`, and `rollout_slug`.",
+            "memory",
+            '{"raw_memory":"","rollout_summary":"本轮没有需要长期保存的记忆。",'
+            '"rollout_slug":""}',
+        ),
+        (
+            "Generate 0 to 3 hyperpersonalized suggestions for what this user can do.",
+            "suggestions",
+            "[]",
+        ),
+        (
+            "Generate a concise title for this conversation.",
+            "title",
+            "新对话",
+        ),
+        (
+            "You are a helpful assistant. You will be presented with a user prompt, "
+            "and your job is to normalize it.",
+            "utility",
+            "[]",
+        ),
+    ]
+
+    with TestClient(app) as client:
+        for prompt, kind, expected in cases:
+            response = client.post(
+                "/v1/responses",
+                headers=auth,
+                json={"model": "gpt-5", "input": prompt},
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["status"] == "completed"
+            assert body["output"][0]["content"][0]["text"] == expected
+            stored = app.state.database.get_request(body["id"])
+            assert stored is not None
+            assert stored["request_kind"] == kind
+            assert stored["answer_source"] == "internal_automation"
+
+        assert app.state.database.list_requests(status="pending") == []
+
+        legacy = app.state.database.create_request(
+            request_id="resp_pending_housekeeping",
+            model="gpt-5",
+            messages=[{"role": "user", "content": cases[0][0]}],
+            mode="sync",
+            expires_at=int(time.time()) + 300,
+            source="openai_responses",
+            stream_requested=True,
+        )
+        assert legacy["status"] == "pending"
+        assert app.state.human_requests.process_internal_requests() == 1
+        settled = app.state.database.get_request(legacy["id"])
+        assert settled is not None
+        assert settled["status"] == "answered"
+        assert settled["answer_source"] == "internal_automation"
+
+
 def test_schedule_rule_supports_overnight_window(tmp_path: Path) -> None:
     app = create_app(build_settings(tmp_path))
     with TestClient(app):
@@ -1571,7 +1642,7 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         assert dashboard.status_code == 200
         assert "会话工作台" in dashboard.text
         assert "像用户一样阅读聊天" in dashboard.text
-        assert "admin.js?v=20260825h" in dashboard.text
+        assert "admin.js?v=20260825i" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text

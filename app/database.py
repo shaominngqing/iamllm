@@ -395,6 +395,8 @@ class Database:
             FROM human_requests
             WHERE preview = '' OR context_chars = 0 OR request_kind = ''
                OR preview LIKE '<system-reminder>%'
+               OR preview LIKE '<environment_context>%'
+               OR preview LIKE '<in-app-browser-context>%'
                OR preview LIKE 'SessionStart hook additional context:%'
             """
         ).fetchall()
@@ -945,7 +947,7 @@ class Database:
                 SELECT
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
                     SUM(CASE WHEN status = 'answered' AND answered_at >= ? THEN 1 ELSE 0 END) AS answered_today,
-                    SUM(CASE WHEN answer_source = 'automation' AND answered_at >= ? THEN 1 ELSE 0 END) AS automated_today,
+                    SUM(CASE WHEN answer_source IN ('automation', 'internal_automation') AND answered_at >= ? THEN 1 ELSE 0 END) AS automated_today,
                     AVG(CASE WHEN status = 'answered' AND answered_at >= ? THEN answered_at - created_at END) AS avg_seconds
                 FROM human_requests
                 """,
@@ -1805,7 +1807,12 @@ class Database:
         if result["request_kind"] == "recap":
             result["preview"] = "生成会话回顾"
         elif str(result.get("preview") or "").casefold().startswith(
-            ("<system-reminder", "sessionstart hook additional context:")
+            (
+                "<system-reminder",
+                "<environment_context",
+                "<in-app-browser-context",
+                "sessionstart hook additional context:",
+            )
         ):
             result["preview"] = Database._request_preview(result["messages"])
         return result
@@ -1827,7 +1834,7 @@ class Database:
         if result["request_kind"] == "recap":
             result["preview"] = "生成会话回顾"
         elif result["request_kind"] == "bootstrap":
-            result["preview"] = "准备 Claude 会话"
+            result["preview"] = "准备客户端会话"
         now = _now_ms()
         result["claim_active"] = bool(
             result.get("claim_owner")
@@ -1916,7 +1923,7 @@ class Database:
                 if kind == "recap":
                     return "生成会话回顾"
                 if kind == "bootstrap":
-                    return "准备 Claude 会话"
+                    return "准备客户端会话"
                 cleaned = cls._clean_user_text(text)
                 if cleaned:
                     return cls._short_title(cleaned)
@@ -1951,7 +1958,8 @@ class Database:
     def _strip_client_internal_text(value: str) -> str:
         text = str(value or "").strip()
         text = re.sub(
-            r"<system-reminder(?:\s[^>]*)?>.*?</system-reminder>",
+            r"<(?P<tag>system-reminder|environment_context|in-app-browser-context)"
+            r"(?:\s[^>]*)?>.*?</(?P=tag)>",
             "",
             text,
             flags=re.IGNORECASE | re.DOTALL,

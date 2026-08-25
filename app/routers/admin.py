@@ -46,7 +46,8 @@ def _admin_attachment_url(
 def _strip_client_internal_text(value: str) -> tuple[str, int]:
     """Remove agent-runtime blocks while preserving user text beside them."""
     text, count = re.subn(
-        r"<system-reminder(?:\s[^>]*)?>.*?</system-reminder>",
+        r"<(?P<tag>system-reminder|environment_context|in-app-browser-context)"
+        r"(?:\s[^>]*)?>.*?</(?P=tag)>",
         "",
         str(value or ""),
         flags=re.IGNORECASE | re.DOTALL,
