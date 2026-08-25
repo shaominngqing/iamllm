@@ -4,6 +4,7 @@ import base64
 import binascii
 import copy
 import json
+import re
 import secrets
 from typing import Any, AsyncIterator
 from urllib.parse import unquote_to_bytes
@@ -42,15 +43,44 @@ def _admin_attachment_url(
     return f"/admin/api/requests/{request_id}/attachments/{message_index}/{part_index}"
 
 
+def _is_client_internal_message(message: dict[str, Any]) -> bool:
+    """Identify hook/runtime context that agent clients encode as user messages."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    else:
+        return False
+    return bool(
+        re.match(r"^\s*<system-reminder(?:\s|>)", text, flags=re.IGNORECASE)
+        or re.match(
+            r"^\s*SessionStart hook additional context\s*:",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
     """Return the fast, human-facing subset used by the default conversation view."""
     result = dict(row)
     messages: list[dict[str, Any]] = []
+    client_internal_count = 0
     if row.get("request_kind", "conversation") == "conversation":
         for message_index, original in enumerate(row.get("messages") or []):
             if original.get("role") not in {"user", "assistant"}:
                 continue
             if original.get("role") == "assistant" and original.get("tool_calls"):
+                continue
+            if _is_client_internal_message(original):
+                client_internal_count += 1
                 continue
             message = copy.deepcopy(original)
             content = message.get("content")
@@ -78,6 +108,7 @@ def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
                         )
             messages.append(message)
     result["messages"] = messages
+    result["client_internal_count"] = client_internal_count
     result["raw_loaded"] = False
     return result
 

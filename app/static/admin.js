@@ -811,6 +811,13 @@
     return Math.max(0, messages.length - 1);
   }
 
+  function isClientInternalMessage(message) {
+    if (message?.role !== "user") return false;
+    const text = messagePlainText(message).trim();
+    return /^<system-reminder(?:\s|>)/i.test(text)
+      || /^SessionStart hook additional context\s*:/i.test(text);
+  }
+
   function fileNameFromPath(value) {
     const clean = String(value || "").split(/[?#]/)[0];
     return clean.split(/[\\/]/).filter(Boolean).pop() || "未命名文件";
@@ -1084,6 +1091,11 @@
       make("span", "", "系统提示和工具细节已经收进“运行记录”，这里专心看聊天。")
     );
     intro.append(introCopy);
+    const internalCount = Number(item.client_internal_count || 0)
+      || (item.messages || []).filter(isClientInternalMessage).length;
+    if (internalCount) {
+      intro.append(make("span", "context-size-chip", `已隐藏 ${internalCount} 条客户端内部上下文`));
+    }
     thread.append(intro);
 
     const kind = requestKind(item);
@@ -1111,6 +1123,7 @@
     const conversation = make("section", "operator-chat-transcript");
     const messages = (item.messages || []).filter((message) =>
       ["user", "assistant"].includes(message.role)
+      && !isClientInternalMessage(message)
       && (messagePlainText(message).trim() || collectMessageAttachments(message).length)
       && !(message.role === "assistant" && message.tool_calls?.length && !messagePlainText(message).trim())
     );
@@ -1176,6 +1189,14 @@
       make("p", "", "你返回“调用工具”后，真正执行工具的是调用方客户端；执行结果会在下一次请求中回到这里。服务端不会擅自运行这些函数。")
     );
     thread.append(intro);
+
+    const internalMessages = (item.messages || []).filter(isClientInternalMessage);
+    const internalContext = buildLazyMessageGroup(
+      "客户端内部上下文",
+      "SessionStart hook、skills 与运行提醒；不会出现在普通聊天里",
+      internalMessages
+    );
+    if (internalContext) thread.append(internalContext);
 
     const runs = collectToolRuns(item.messages || []);
     const timeline = make("section", "tool-timeline");

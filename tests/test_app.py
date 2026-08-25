@@ -102,6 +102,11 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
         long_tool_output = json.dumps(
             {"result": "工具执行结果" * 5_000}, ensure_ascii=False
         )
+        client_internal = (
+            "<system-reminder>\nSessionStart hook additional context: "
+            + "skill instructions " * 1_000
+            + "\n</system-reminder>"
+        )
         long_user = "请分析这次任务并给我三个明确建议，优先说结论。" + "补充背景" * 500
         request = app.state.database.create_request(
             request_id="req_large_context",
@@ -120,6 +125,7 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
                     ],
                 },
                 {"role": "tool", "tool_call_id": "call_large", "content": long_tool_output},
+                {"role": "user", "content": client_internal},
                 {"role": "user", "content": long_user},
             ],
             tools=[
@@ -148,7 +154,7 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
         assert "messages" not in summary
         assert "tools" not in summary
         assert "response" not in summary
-        assert summary["message_count"] == 4
+        assert summary["message_count"] == 5
         assert summary["system_count"] == 1
         assert summary["tool_count"] == 3
         assert summary["context_chars"] > 50_000
@@ -157,12 +163,14 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
         detail = client.get(f"/admin/api/requests/{request['id']}")
         assert detail.status_code == 200
         assert detail.json()["messages"] == [{"role": "user", "content": long_user}]
+        assert detail.json()["client_internal_count"] == 1
         assert detail.json()["raw_loaded"] is False
         assert detail.json()["tools"][0]["function"]["name"] == "inspect_repo"
 
         raw = client.get(f"/admin/api/requests/{request['id']}/raw")
         assert raw.status_code == 200
         assert raw.json()["messages"][0]["content"] == long_system
+        assert raw.json()["messages"][-2]["content"] == client_internal
         assert raw.json()["raw_loaded"] is True
         assert raw.headers.get("content-encoding") == "gzip"
         assert len(detail.content) < len(raw.content) * 0.6
@@ -1466,7 +1474,7 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         assert dashboard.status_code == 200
         assert "会话工作台" in dashboard.text
         assert "像用户一样阅读聊天" in dashboard.text
-        assert "admin.js?v=20260825e" in dashboard.text
+        assert "admin.js?v=20260825f" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text
