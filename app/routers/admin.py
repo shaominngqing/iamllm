@@ -148,7 +148,9 @@ def create_admin_router(
         filter: str = "pending", _: None = Depends(require_admin)
     ) -> dict[str, Any]:
         selected = filter if filter in {"pending", "answered", "expired"} else "all"
-        rows = database.list_requests(status=None if selected == "all" else selected)
+        rows = database.list_request_summaries(
+            status=None if selected == "all" else selected
+        )
         return {"items": rows, "filter": selected, "total": len(rows)}
 
     @application.get("/admin/api/requests/{request_id}")
@@ -167,20 +169,14 @@ def create_admin_router(
         payload: AdminOperatorPayload,
         _: None = Depends(require_admin),
     ) -> dict[str, Any]:
-        row = database.get_request(request_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="Request not found")
-        if row["status"] != "pending":
-            raise HTTPException(status_code=409, detail="这个问题已经结束了")
         claimed = database.claim_request(
             request_id, payload.operator_id, lease_seconds=30
         )
         if not claimed:
             raise HTTPException(
                 status_code=409,
-                detail="另一张后台页面正在回答这条问题",
+                detail="请求已经结束，或另一张后台页面正在回答",
             )
-        claimed["stream_chunks"] = database.list_stream_chunks(request_id)
         return claimed
 
     @application.post("/admin/api/requests/{request_id}/claim/release")
@@ -189,8 +185,6 @@ def create_admin_router(
         payload: AdminOperatorPayload,
         _: None = Depends(require_admin),
     ) -> dict[str, bool]:
-        if not database.get_request(request_id):
-            raise HTTPException(status_code=404, detail="Request not found")
         return {
             "released": database.release_request_claim(
                 request_id, payload.operator_id
@@ -201,7 +195,7 @@ def create_admin_router(
     async def admin_api_request_presence(
         request_id: str, _: None = Depends(require_admin)
     ) -> dict[str, Any]:
-        row = database.get_request(request_id)
+        row = database.get_request_state(request_id)
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
         return {
@@ -219,7 +213,7 @@ def create_admin_router(
         payload: StreamChunkPayload,
         _: None = Depends(require_admin),
     ) -> dict[str, Any]:
-        row = database.get_request(request_id)
+        row = database.get_request_state(request_id)
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
         if row["status"] != "pending":
@@ -245,7 +239,7 @@ def create_admin_router(
         payload: AdminOperatorPayload | None = None,
         _: None = Depends(require_admin),
     ) -> dict[str, Any]:
-        row = database.get_request(request_id)
+        row = database.get_request_state(request_id)
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
         if row["status"] != "pending":

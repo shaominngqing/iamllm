@@ -37,6 +37,11 @@ class Database:
                     id TEXT PRIMARY KEY,
                     model TEXT NOT NULL,
                     messages_json TEXT NOT NULL,
+                    preview TEXT NOT NULL DEFAULT '',
+                    context_chars INTEGER NOT NULL DEFAULT 0,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    system_count INTEGER NOT NULL DEFAULT 0,
+                    tool_count INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL CHECK (
                         status IN ('pending', 'answered', 'expired')
                     ),
@@ -226,6 +231,37 @@ class Database:
             self._ensure_column(
                 connection, "human_requests", "api_key_id", "TEXT"
             )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "preview",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "context_chars",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "message_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "system_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "human_requests",
+                "tool_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._backfill_request_summaries(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_human_requests_api_key_status
@@ -233,6 +269,7 @@ class Database:
                 """
             )
             self._seed_control_center(connection)
+            connection.execute("PRAGMA optimize")
 
     @staticmethod
     def _seed_control_center(connection: sqlite3.Connection) -> None:
@@ -333,6 +370,36 @@ class Database:
         if column not in columns:
             connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
+
+    @classmethod
+    def _backfill_request_summaries(cls, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT id, messages_json, tools_json
+            FROM human_requests
+            WHERE preview = '' OR context_chars = 0
+            """
+        ).fetchall()
+        for row in rows:
+            messages = json.loads(row["messages_json"] or "[]")
+            tools = json.loads(row["tools_json"] or "[]")
+            summary = cls._request_summary(messages, tools)
+            connection.execute(
+                """
+                UPDATE human_requests
+                SET preview = ?, context_chars = ?, message_count = ?,
+                    system_count = ?, tool_count = ?
+                WHERE id = ?
+                """,
+                (
+                    summary["preview"],
+                    summary["context_chars"],
+                    summary["message_count"],
+                    summary["system_count"],
+                    summary["tool_count"],
+                    row["id"],
+                ),
             )
 
     @staticmethod
@@ -1030,6 +1097,10 @@ class Database:
     ) -> dict[str, Any]:
         now_seconds = int(time.time())
         now = _now_ms()
+        tools = tools or []
+        messages_json = json.dumps(messages, ensure_ascii=False)
+        tools_json = json.dumps(tools, ensure_ascii=False)
+        summary = self._request_summary(messages, tools)
         auto_rule = self.resolve_auto_reply(messages)
         auto_due_at = (
             now + int(auto_rule["delay_seconds"]) * 1000 if auto_rule else None
@@ -1038,30 +1109,43 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO human_requests (
-                    id, model, messages_json, status, answer, mode,
+                    id, model, messages_json, preview, context_chars,
+                    message_count, system_count, tool_count,
+                    status, answer, mode,
                     created_at, answered_at, expires_at, conversation_id,
                     tools_json, response_json, source, updated_at,
                     auto_reply_rule_id, auto_reply_due_at, auto_reply_label,
                     auto_reply_text, answer_source, stream_requested,
                     stream_chunk_count, api_key_id
-                ) VALUES (?, ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, 0, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_id,
                     model,
-                    json.dumps(messages, ensure_ascii=False),
+                    messages_json,
+                    summary["preview"],
+                    summary["context_chars"],
+                    summary["message_count"],
+                    summary["system_count"],
+                    summary["tool_count"],
+                    "pending",
+                    None,
                     mode,
                     now_seconds,
+                    None,
                     expires_at,
                     conversation_id,
-                    json.dumps(tools or [], ensure_ascii=False),
+                    tools_json,
+                    None,
                     source,
                     now,
                     auto_rule["id"] if auto_rule else None,
                     auto_due_at,
                     auto_rule["name"] if auto_rule else None,
                     auto_rule["response_text"] if auto_rule else None,
+                    None,
                     int(stream_requested),
+                    0,
                     api_key_id,
                 ),
             )
@@ -1076,6 +1160,31 @@ class Database:
                 "SELECT * FROM human_requests WHERE id = ?", (request_id,)
             ).fetchone()
         return self._deserialize_request(row) if row else None
+
+    def get_request_state(self, request_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, status, stream_requested, stream_chunk_count,
+                       claim_owner, claim_expires_at, client_last_seen_at
+                FROM human_requests WHERE id = ?
+                """,
+                (request_id,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["stream_requested"] = bool(result.get("stream_requested", 0))
+        now = _now_ms()
+        result["claim_active"] = bool(
+            result.get("claim_owner")
+            and int(result.get("claim_expires_at") or 0) > now
+        )
+        result["client_connected"] = bool(
+            result.get("client_last_seen_at")
+            and int(result["client_last_seen_at"]) >= now - 6_000
+        )
+        return result
 
     def claim_request(
         self, request_id: str, owner_id: str, *, lease_seconds: int = 30
@@ -1109,7 +1218,13 @@ class Database:
             )
             if changed_owner:
                 self._bump_queue_version(connection)
-        return self.get_request(request_id)
+        return {
+            "id": request_id,
+            "status": "pending",
+            "claim_owner": owner_id,
+            "claim_expires_at": claim_expires_at,
+            "claim_active": True,
+        }
 
     def release_request_claim(self, request_id: str, owner_id: str) -> bool:
         with self._connect() as connection:
@@ -1318,6 +1433,39 @@ class Database:
                     (limit,),
                 ).fetchall()
         return [self._deserialize_request(row) for row in rows]
+
+    def list_request_summaries(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        columns = """
+            id, model, preview, context_chars, message_count, system_count,
+            tool_count, status, mode, created_at, answered_at, expires_at,
+            conversation_id, source, updated_at, auto_reply_rule_id,
+            auto_reply_due_at, auto_reply_label, answer_source,
+            stream_requested, stream_chunk_count, claim_owner,
+            claim_expires_at, client_last_seen_at, api_key_id
+        """
+        with self._connect() as connection:
+            if status:
+                rows = connection.execute(
+                    f"""
+                    SELECT {columns} FROM human_requests
+                    WHERE status = ?
+                    ORDER BY created_at DESC, updated_at DESC
+                    LIMIT ?
+                    """,
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"""
+                    SELECT {columns} FROM human_requests
+                    ORDER BY created_at DESC, updated_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [self._deserialize_request_summary(row) for row in rows]
 
     def answer_request(
         self,
@@ -1609,7 +1757,33 @@ class Database:
             result.get("client_last_seen_at")
             and int(result["client_last_seen_at"]) >= now - 6_000
         )
-        result["preview"] = Database._message_preview(result["messages"][-1])
+        if not result.get("preview"):
+            result["preview"] = Database._request_preview(result["messages"])
+        result["context_chars"] = int(result.get("context_chars") or 0)
+        result["message_count"] = int(
+            result.get("message_count") or len(result["messages"])
+        )
+        result["system_count"] = int(result.get("system_count") or 0)
+        result["tool_count"] = int(result.get("tool_count") or 0)
+        return result
+
+    @staticmethod
+    def _deserialize_request_summary(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["stream_requested"] = bool(result.get("stream_requested", 0))
+        result["context_chars"] = int(result.get("context_chars") or 0)
+        result["message_count"] = int(result.get("message_count") or 0)
+        result["system_count"] = int(result.get("system_count") or 0)
+        result["tool_count"] = int(result.get("tool_count") or 0)
+        now = _now_ms()
+        result["claim_active"] = bool(
+            result.get("claim_owner")
+            and int(result.get("claim_expires_at") or 0) > now
+        )
+        result["client_connected"] = bool(
+            result.get("client_last_seen_at")
+            and int(result["client_last_seen_at"]) >= now - 6_000
+        )
         return result
 
     @staticmethod
@@ -1638,10 +1812,10 @@ class Database:
         return result
 
     @staticmethod
-    def _message_preview(message: dict[str, Any]) -> str:
+    def _message_text(message: dict[str, Any]) -> str:
         content = message.get("content")
         if isinstance(content, str):
-            return content
+            return content.strip()
         if isinstance(content, list):
             texts = [
                 str(part.get("text", ""))
@@ -1657,7 +1831,61 @@ class Database:
             return label or "图片消息"
         if message.get("role") == "tool":
             return "工具返回结果"
-        return "新消息"
+        return ""
+
+    @staticmethod
+    def _short_title(value: str, *, limit: int = 88) -> str:
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        cleaned = " ".join((lines[0] if lines else value).split())
+        cleaned = cleaned.lstrip("#>*- ")
+        if not cleaned:
+            return "新请求"
+        if cleaned[0] in "[{" and len(cleaned) > 48:
+            return "结构化数据处理请求"
+        if len(cleaned) <= limit:
+            return cleaned
+        candidate = cleaned[:limit].rstrip()
+        if " " in candidate[limit // 2 :]:
+            candidate = candidate.rsplit(" ", 1)[0]
+        return f"{candidate.rstrip('，。,:;；')}…"
+
+    @classmethod
+    def _request_preview(cls, messages: list[dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            text = cls._message_text(message)
+            if text:
+                return cls._short_title(text)
+        for message in reversed(messages):
+            text = cls._message_text(message)
+            if text:
+                return cls._short_title(text)
+        return "新请求"
+
+    @classmethod
+    def _request_summary(
+        cls,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, int | str]:
+        tool_activity = len(tools)
+        for message in messages:
+            if message.get("role") == "tool":
+                tool_activity += 1
+            tool_activity += len(message.get("tool_calls") or [])
+        return {
+            "preview": cls._request_preview(messages),
+            "context_chars": len(json.dumps(messages, ensure_ascii=False))
+            + len(json.dumps(tools, ensure_ascii=False)),
+            "message_count": len(messages),
+            "system_count": sum(
+                1
+                for message in messages
+                if message.get("role") in {"system", "developer"}
+            ),
+            "tool_count": tool_activity,
+        }
 
     @staticmethod
     def _latest_user_text(messages: list[dict[str, Any]]) -> str:

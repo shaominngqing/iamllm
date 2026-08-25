@@ -30,6 +30,8 @@
     apiKeys: [],
     profile: null,
     lastCreatedKey: null,
+    selectedRequestDetail: null,
+    contextView: "focus",
     knownRequestIds: new Set(),
     newArrivalIds: new Set(),
     queueLoaded: false,
@@ -57,8 +59,10 @@
 
   try {
     state.autoOpen = localStorage.getItem("iamllm_auto_open") !== "off";
+    state.contextView = localStorage.getItem("iamllm_context_view") === "full" ? "full" : "focus";
   } catch {
     state.autoOpen = true;
+    state.contextView = "focus";
   }
 
   function make(tag, className, text) {
@@ -129,6 +133,13 @@
     return `${(seconds / 3600).toFixed(1)}h`;
   }
 
+  function contextSizeLabel(characters) {
+    const count = Number(characters || 0);
+    if (count < 1_000) return `${count} 字符`;
+    if (count < 1_000_000) return `${(count / 1_000).toFixed(count < 10_000 ? 1 : 0)}K 字符`;
+    return `${(count / 1_000_000).toFixed(1)}M 字符`;
+  }
+
   function waitingLabel(createdAt) {
     const seconds = Math.max(0, Math.floor(Date.now() / 1000 - createdAt));
     if (seconds < 60) return "刚刚到";
@@ -171,8 +182,8 @@
       state.claimedRequestId = item.id;
       state.claimRenewAt = Date.now() + 10_000;
       state.selectedRequestClaimConflict = false;
-      claimed.claimConflict = false;
-      return claimed;
+      Object.assign(item, claimed, { claimConflict: false });
+      return item;
     } catch (error) {
       if (error.status !== 409) throw error;
       if (state.claimedRequestId === item.id) state.claimedRequestId = null;
@@ -298,6 +309,7 @@
       } else {
         state.selectedRequestId = null;
         state.selectedRequestStatus = null;
+        state.selectedRequestDetail = null;
         history.replaceState(null, "", "#inbox");
         renderEmptyDetail({ completed: reason === "after-answer" || state.queueJustCleared });
         if (arrivals.length) showNewRequestNotice(arrivals);
@@ -328,7 +340,9 @@
       const status = make("span", `status status-${item.status}`, statusLabel(item.status));
       if (state.requestFilter === "pending") status.textContent = `${index + 1} · ${statusLabel(item.status)}`;
       head.append(status, make("time", "", item.status === "pending" ? waitingLabel(item.created_at) : formatTime(item.created_at)));
-      row.append(head, make("p", "", item.preview));
+      const preview = make("p", "", item.preview);
+      preview.title = item.preview;
+      row.append(head, preview);
 
       const foot = make("div", "request-row-foot");
       const sourceLabels = {
@@ -339,6 +353,12 @@
         api: "OpenAI Chat",
       };
       foot.append(make("span", "", sourceLabels[item.source] || "API"));
+      if (Number(item.context_chars || 0) >= 20_000) {
+        foot.append(make("span", "large-context-badge", contextSizeLabel(item.context_chars)));
+      }
+      if (Number(item.tool_count || 0) > 0) {
+        foot.append(make("span", "tool-count-badge", `工具 ${item.tool_count}`));
+      }
       if (item.conversation_id) foot.append(make("span", "", "有上下文"));
       if (item.stream_requested || item.stream_chunk_count) {
         const segmentLabel = item.stream_requested ? "直播中" : "回答中";
@@ -380,6 +400,7 @@
         return;
       }
       state.selectedRequestStatus = item.status;
+      state.selectedRequestDetail = item;
       if (item.status !== "pending" && state.claimedRequestId === requestId) {
         state.claimedRequestId = null;
       }
@@ -394,6 +415,7 @@
   }
 
   function renderEmptyDetail({ completed = false } = {}) {
+    state.selectedRequestDetail = null;
     const empty = make("div", "detail-placeholder");
     if (completed) {
       empty.classList.add("queue-complete");
@@ -432,14 +454,67 @@
     else showNewRequestNotice(visibleArrivals);
   }
 
-  function appendMessageContent(container, content) {
+  const roleLabels = {
+    system: "系统指令",
+    developer: "开发者指令",
+    user: "当前输入",
+    assistant: "助手历史",
+    tool: "工具结果",
+  };
+
+  function messagePlainText(message) {
+    const content = message?.content;
+    let text = "";
+    if (typeof content === "string") text = content;
+    else if (Array.isArray(content)) {
+      text = content.filter((part) => part?.type === "text").map((part) => part.text || "").join("\n");
+    }
+    const calls = (message?.tool_calls || []).map((call) =>
+      `${call.function?.name || "unknown"}(${call.function?.arguments || "{}"})`
+    );
+    return [text, ...calls].filter(Boolean).join("\n");
+  }
+
+  function messageCharacterCount(message) {
+    return messagePlainText(message).length;
+  }
+
+  function appendExpandableText(container, text, { limit = 1_800 } = {}) {
+    const value = String(text || "");
+    const content = make("div", "content-text");
+    const long = value.length > limit;
+    const collapsed = long ? `${value.slice(0, limit).trimEnd()}\n\n… 已折叠 ${contextSizeLabel(value.length - limit)}` : value;
+    content.textContent = collapsed;
+    container.append(content);
+    if (!value) return;
+
+    const actions = make("div", "content-actions");
+    if (long) {
+      const toggle = make("button", "", "展开全文");
+      toggle.type = "button";
+      toggle.addEventListener("click", () => {
+        const expanded = toggle.dataset.expanded === "true";
+        toggle.dataset.expanded = expanded ? "false" : "true";
+        toggle.textContent = expanded ? "展开全文" : "收起全文";
+        content.textContent = expanded ? collapsed : value;
+      });
+      actions.append(toggle);
+    }
+    const copy = make("button", "", "复制原文");
+    copy.type = "button";
+    copy.addEventListener("click", () => copyText(value, "原文已复制"));
+    actions.append(copy);
+    container.append(actions);
+  }
+
+  function appendMessageContent(container, content, options = {}) {
     if (typeof content === "string") {
-      container.append(make("div", "content-text", content));
+      appendExpandableText(container, content, options);
       return;
     }
     if (!Array.isArray(content)) return;
     content.forEach((part) => {
-      if (part.type === "text") container.append(make("div", "content-text", part.text));
+      if (part.type === "text") appendExpandableText(container, part.text, options);
       if (part.type === "image_url" && part.image_url?.url) {
         const link = make("a");
         link.href = part.image_url.url;
@@ -452,6 +527,141 @@
         link.append(image);
         container.append(link);
       }
+    });
+  }
+
+  function buildMessageBubble(message, { limit = 1_800, focus = false } = {}) {
+    const bubble = make("article", `context-message ${message.role || "user"}${focus ? " focus-message" : ""}`);
+    const head = make("div", "context-message-head");
+    head.append(
+      make("span", "role-label", roleLabels[message.role] || message.role || "消息"),
+      make("span", "context-message-size", contextSizeLabel(messageCharacterCount(message)))
+    );
+    bubble.append(head);
+    appendMessageContent(bubble, message.content, { limit });
+    (message.tool_calls || []).forEach((toolCall) => {
+      const tool = make("div", "tool-call-card");
+      tool.append(make("span", "", "调用工具"), make("strong", "", toolCall.function?.name || "unknown"));
+      appendExpandableText(tool, toolCall.function?.arguments || "{}", { limit: 1_000 });
+      bubble.append(tool);
+    });
+    return bubble;
+  }
+
+  function buildLazyMessageGroup(label, description, messages) {
+    if (!messages.length) return null;
+    const details = make("details", "context-group");
+    const summary = make("summary");
+    const copy = make("div");
+    copy.append(make("b", "", label), make("span", "", description));
+    const characters = messages.reduce((total, message) => total + messageCharacterCount(message), 0);
+    summary.append(copy, make("em", "", `${messages.length} 条 · ${contextSizeLabel(characters)}`));
+    const body = make("div", "context-group-body");
+    details.append(summary, body);
+    details.addEventListener("toggle", () => {
+      if (!details.open || body.dataset.loaded === "true") return;
+      body.dataset.loaded = "true";
+      messages.forEach((message) => body.append(buildMessageBubble(message, { limit: 1_500 })));
+    });
+    return details;
+  }
+
+  function buildToolsGroup(tools) {
+    if (!tools?.length) return null;
+    const details = make("details", "context-group tool-definition-group");
+    const summary = make("summary");
+    const copy = make("div");
+    copy.append(make("b", "", "可调用工具"), make("span", "", "来自客户端的函数定义，展开后按工具查看"));
+    summary.append(copy, make("em", "", `${tools.length} 个定义`));
+    const body = make("div", "context-group-body available-tools");
+    details.append(summary, body);
+    details.addEventListener("toggle", () => {
+      if (!details.open || body.dataset.loaded === "true") return;
+      body.dataset.loaded = "true";
+      tools.forEach((tool) => {
+        const toolDetails = make("details");
+        toolDetails.append(make("summary", "", tool.function?.name || "unknown"));
+        const toolBody = make("div", "tool-definition-body");
+        toolDetails.append(toolBody);
+        toolDetails.addEventListener("toggle", () => {
+          if (!toolDetails.open || toolBody.dataset.loaded === "true") return;
+          toolBody.dataset.loaded = "true";
+          if (tool.function?.description) toolBody.append(make("p", "", tool.function.description));
+          appendExpandableText(toolBody, JSON.stringify(tool.function?.parameters || {}, null, 2), { limit: 2_000 });
+        });
+        body.append(toolDetails);
+      });
+    });
+    return details;
+  }
+
+  function focusMessageIndex(messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === "user" && messagePlainText(messages[index]).trim()) return index;
+    }
+    return Math.max(0, messages.length - 1);
+  }
+
+  function buildContextThread(item) {
+    const thread = make("div", `context-thread context-view-${state.contextView}`);
+    const messages = item.messages || [];
+    const totalChars = Number(item.context_chars || messages.reduce((sum, message) => sum + messageCharacterCount(message), 0));
+    const overview = make("section", "context-overview");
+    const overviewCopy = make("div");
+    overviewCopy.append(
+      make("p", "eyebrow", "CONTEXT MAP"),
+      make("strong", "", state.contextView === "focus" ? "重点视图" : "完整视图"),
+      make("span", "", state.contextView === "focus" ? "机器上下文仍完整保留，只是默认收好。" : "所有消息按协议顺序展示，超长内容仍按项折叠。")
+    );
+    const stats = make("div", "context-stats");
+    stats.append(
+      make("span", "", `${messages.length} 条消息`),
+      make("span", "", contextSizeLabel(totalChars)),
+      make("span", "", `${Number(item.system_count || 0)} 条指令`),
+      make("span", "", `${Number(item.tool_count || 0)} 个工具项`)
+    );
+    overview.append(overviewCopy, stats);
+    thread.append(overview);
+
+    const focusIndex = focusMessageIndex(messages);
+    if (state.contextView === "full") {
+      messages.forEach((message) => thread.append(buildMessageBubble(message, { limit: 2_200, focus: message === messages[focusIndex] })));
+      const toolsGroup = buildToolsGroup(item.tools || []);
+      if (toolsGroup) thread.append(toolsGroup);
+      return thread;
+    }
+
+    const focusCard = make("section", "request-focus-card");
+    focusCard.append(make("div", "focus-card-label", "现在处理这条"), buildMessageBubble(messages[focusIndex] || { role: "user", content: "新请求" }, { limit: 2_400, focus: true }));
+    thread.append(focusCard);
+
+    const instructionMessages = messages.filter((message, index) => index !== focusIndex && ["system", "developer"].includes(message.role));
+    const toolMessages = messages.filter((message, index) => index !== focusIndex && (message.role === "tool" || message.tool_calls?.length));
+    const historyMessages = messages.filter((message, index) =>
+      index !== focusIndex && !["system", "developer", "tool"].includes(message.role) && !message.tool_calls?.length
+    );
+    const groups = [
+      buildLazyMessageGroup("系统与开发者指令", "客户端的行为约束与运行说明", instructionMessages),
+      buildLazyMessageGroup("对话历史", "此前的用户与助手消息", historyMessages),
+      buildLazyMessageGroup("工具过程", "函数调用、工具参数与执行结果", toolMessages),
+      buildToolsGroup(item.tools || []),
+    ].filter(Boolean);
+    if (groups.length) {
+      const stack = make("section", "context-group-stack");
+      stack.append(...groups);
+      thread.append(stack);
+    }
+    return thread;
+  }
+
+  function setContextView(view, item) {
+    state.contextView = view === "full" ? "full" : "focus";
+    try { localStorage.setItem("iamllm_context_view", state.contextView); }
+    catch { /* View preference is optional. */ }
+    const current = $("#request-detail .context-thread");
+    if (current) current.replaceWith(buildContextThread(item));
+    $$("#request-detail [data-context-view]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.contextView === state.contextView);
     });
   }
 
@@ -485,8 +695,19 @@
     const queuePosition = index >= 0 && state.requestFilter === "pending"
       ? `队列 ${index + 1}/${state.requests.length} · ${waitingLabel(item.created_at)}`
       : item.conversation_id ? "FULL CONVERSATION" : "SINGLE REQUEST";
-    title.append(make("p", "eyebrow queue-position", queuePosition), make("h3", "", item.preview));
+    const requestTitle = make("h3", "", item.preview);
+    requestTitle.title = item.preview;
+    title.append(make("p", "eyebrow queue-position", queuePosition), requestTitle);
     const identity = make("div", "detail-identity");
+    const contextToggle = make("div", "context-view-toggle");
+    [["focus", "重点"], ["full", "完整"]].forEach(([view, label]) => {
+      const button = make("button", view === state.contextView ? "active" : "", label);
+      button.type = "button";
+      button.dataset.contextView = view;
+      button.addEventListener("click", () => setContextView(view, item));
+      contextToggle.append(button);
+    });
+    identity.append(contextToggle);
     if (item.status === "pending" || state.requests.length > 1) {
       const navigation = make("div", "detail-navigation");
       const previous = make("button", "", "↑ 上一条"); previous.type = "button"; previous.title = "快捷键 K";
@@ -501,33 +722,7 @@
     identity.append(make("span", `status status-${item.status}`, statusLabel(item.status)), make("code", "", item.id));
     top.append(title, identity);
 
-    const thread = make("div", "context-thread");
-    item.messages.forEach((message) => {
-      const bubble = make("article", `context-message ${message.role}`);
-      bubble.append(make("span", "role-label", message.role));
-      appendMessageContent(bubble, message.content);
-      (message.tool_calls || []).forEach((toolCall) => {
-        const tool = make("div", "tool-call-card");
-        tool.append(make("span", "", "调用工具"), make("strong", "", toolCall.function?.name || "unknown"));
-        const pre = make("pre", "", toolCall.function?.arguments || "{}");
-        tool.append(pre);
-        bubble.append(tool);
-      });
-      thread.append(bubble);
-    });
-    if (item.tools?.length) {
-      const tools = make("div", "available-tools");
-      tools.append(make("p", "eyebrow", "CALLER TOOLS"), make("h2", "", "调用方提供的工具"));
-      item.tools.forEach((tool) => {
-        const details = make("details");
-        details.append(make("summary", "", tool.function.name));
-        if (tool.function.description) details.append(make("p", "", tool.function.description));
-        details.append(make("pre", "", JSON.stringify(tool.function.parameters || {}, null, 2)));
-        tools.append(details);
-      });
-      thread.append(tools);
-    }
-    shell.append(top, thread);
+    shell.append(top, buildContextThread(item));
 
     if (item.status === "pending") {
       const presence = make("div", `request-presence ${item.client_connected ? "online" : "offline"}`);
@@ -1385,6 +1580,7 @@
     state.requestFilter = filter;
     state.selectedRequestId = null;
     state.selectedRequestStatus = null;
+    state.selectedRequestDetail = null;
     state.queueJustCleared = false;
     state.queueLoaded = false;
     state.knownRequestIds = new Set();

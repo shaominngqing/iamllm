@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -91,6 +92,123 @@ def test_async_human_job_round_trip(tmp_path: Path) -> None:
             job.json()["response"]["choices"][0]["message"]["content"]
             == "这是我作为真人给出的回答。"
         )
+
+
+def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path) -> None:
+    app = create_app(build_settings(tmp_path))
+
+    with TestClient(app) as client:
+        long_system = "系统运行说明。" * 6_000
+        long_tool_output = json.dumps(
+            {"result": "工具执行结果" * 5_000}, ensure_ascii=False
+        )
+        long_user = "请分析这次任务并给我三个明确建议，优先说结论。" + "补充背景" * 500
+        request = app.state.database.create_request(
+            request_id="req_large_context",
+            model="test-human",
+            messages=[
+                {"role": "system", "content": long_system},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_large",
+                            "type": "function",
+                            "function": {"name": "inspect_repo", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_large", "content": long_tool_output},
+                {"role": "user", "content": long_user},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "inspect_repo",
+                        "description": "读取仓库信息",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            mode="async",
+            expires_at=int(time.time()) + 3_600,
+            source="openai_responses",
+        )
+        assert len(request["preview"]) <= 89
+        assert request["preview"].endswith("…")
+
+        login_admin(client)
+        listing = client.get("/admin/api/requests?filter=pending")
+        assert listing.status_code == 200
+        summary = next(
+            item for item in listing.json()["items"] if item["id"] == request["id"]
+        )
+        assert "messages" not in summary
+        assert "tools" not in summary
+        assert "response" not in summary
+        assert summary["message_count"] == 4
+        assert summary["system_count"] == 1
+        assert summary["tool_count"] == 3
+        assert summary["context_chars"] > 50_000
+        assert len(listing.content) < 5_000
+
+        detail = client.get(f"/admin/api/requests/{request['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["messages"][0]["content"] == long_system
+        assert detail.json()["tools"][0]["function"]["name"] == "inspect_repo"
+        assert detail.headers.get("content-encoding") == "gzip"
+
+
+def test_existing_request_rows_backfill_short_summaries(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE human_requests (
+                id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                answer TEXT,
+                mode TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                answered_at INTEGER,
+                expires_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO human_requests (
+                id, model, messages_json, status, answer, mode,
+                created_at, answered_at, expires_at
+            ) VALUES (?, ?, ?, 'pending', NULL, 'async', ?, NULL, ?)
+            """,
+            (
+                "req_before_summary_migration",
+                "test-human",
+                json.dumps(
+                    [{"role": "user", "content": "迁移前留下的长问题" * 100}],
+                    ensure_ascii=False,
+                ),
+                int(time.time()),
+                int(time.time()) + 3_600,
+            ),
+        )
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        login_admin(client)
+        items = client.get("/admin/api/requests?filter=pending").json()["items"]
+        summary = next(
+            item for item in items if item["id"] == "req_before_summary_migration"
+        )
+        assert summary["preview"].startswith("迁移前留下的长问题")
+        assert summary["preview"].endswith("…")
+        assert summary["context_chars"] > 900
+        assert summary["message_count"] == 1
 
 
 def test_non_stream_request_uses_segmented_admin_composer(tmp_path: Path) -> None:

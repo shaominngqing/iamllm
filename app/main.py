@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -100,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.notification_queue = notification_queue
     application.state.human_requests = human_requests
     application.state.api_keys = api_keys
+    application.add_middleware(GZipMiddleware, minimum_size=1_000)
     application.mount(
         "/static", StaticFiles(directory=APP_DIR / "static"), name="static"
     )
