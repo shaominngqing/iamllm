@@ -1730,9 +1730,6 @@
       streamList.replaceChildren();
       if (!streamChunks.length) {
         streamList.append(make("div", "stream-segment-empty", "第一下空回车不会结束——我猜你只是清了清嗓子。"));
-      } else if (!textMode) {
-        draftStatus.textContent = "提交后由调用方客户端执行；结果会作为后续步骤返回";
-        submit.textContent = "请求客户端执行工具 →";
       } else {
         streamChunks.forEach((chunk) => {
           const segment = make("div", "stream-segment");

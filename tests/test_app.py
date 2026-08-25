@@ -1466,7 +1466,7 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         assert dashboard.status_code == 200
         assert "会话工作台" in dashboard.text
         assert "像用户一样阅读聊天" in dashboard.text
-        assert "admin.js?v=20260825d" in dashboard.text
+        assert "admin.js?v=20260825e" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text
