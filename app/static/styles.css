@@ -542,6 +542,37 @@ button:disabled, textarea:disabled, input:disabled { cursor: not-allowed; opacit
 }
 .inbox-list { min-width: 0; overflow-y: auto; border-right: 1px solid #e0e4dd; background: #f8f9f6; }
 .panel-loading { padding: 36px 20px; color: var(--console-muted); text-align: center; font-size: 12px; }
+.request-transition-loading,
+.context-lazy-loading {
+  min-height: 240px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 44px 24px;
+}
+.request-transition-loading strong,
+.context-lazy-loading strong {
+  max-width: 520px;
+  overflow: hidden;
+  color: var(--console-ink);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-transition-loading small,
+.context-lazy-loading small { color: var(--console-muted); }
+.loading-pulse {
+  width: 28px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--console-green);
+  animation: operator-loading-pulse 900ms ease-in-out infinite alternate;
+}
+@keyframes operator-loading-pulse {
+  from { opacity: .28; transform: scaleX(.55); }
+  to { opacity: 1; transform: scaleX(1); }
+}
 .request-row { width: 100%; padding: 18px; border: 0; border-bottom: 1px solid #e3e6df; border-radius: 0; background: transparent; color: inherit; text-align: left; }
 .request-row:hover, .request-row.active { filter: none; background: #fff; }
 .request-row.active { box-shadow: inset 3px 0 #477b58; }

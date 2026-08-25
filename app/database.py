@@ -1187,6 +1187,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT id, status, stream_requested, stream_chunk_count,
+                       answered_at, answer_source,
                        claim_owner, claim_expires_at, client_last_seen_at
                 FROM human_requests WHERE id = ?
                 """,

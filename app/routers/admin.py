@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import copy
 import json
 import secrets
 from typing import Any, AsyncIterator
+from urllib.parse import unquote_to_bytes
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import Settings
@@ -30,6 +34,87 @@ from app.security import (
 )
 from app.services.human_requests import HumanRequestService
 from app.services.api_keys import ApiKeyService
+
+
+def _admin_attachment_url(
+    request_id: str, message_index: int, part_index: int
+) -> str:
+    return f"/admin/api/requests/{request_id}/attachments/{message_index}/{part_index}"
+
+
+def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the fast, human-facing subset used by the default conversation view."""
+    result = dict(row)
+    messages: list[dict[str, Any]] = []
+    if row.get("request_kind", "conversation") == "conversation":
+        for message_index, original in enumerate(row.get("messages") or []):
+            if original.get("role") not in {"user", "assistant"}:
+                continue
+            if original.get("role") == "assistant" and original.get("tool_calls"):
+                continue
+            message = copy.deepcopy(original)
+            content = message.get("content")
+            if isinstance(content, list):
+                for part_index, part in enumerate(content):
+                    if not isinstance(part, dict):
+                        continue
+                    image = part.get("image_url")
+                    if isinstance(image, dict) and str(
+                        image.get("url", "")
+                    ).startswith("data:"):
+                        image["url"] = _admin_attachment_url(
+                            str(row["id"]), message_index, part_index
+                        )
+                    elif isinstance(image, str) and image.startswith("data:"):
+                        part["image_url"] = _admin_attachment_url(
+                            str(row["id"]), message_index, part_index
+                        )
+                    file_value = part.get("file")
+                    if isinstance(file_value, dict) and str(
+                        file_value.get("url", "")
+                    ).startswith("data:"):
+                        file_value["url"] = _admin_attachment_url(
+                            str(row["id"]), message_index, part_index
+                        )
+            messages.append(message)
+    result["messages"] = messages
+    result["raw_loaded"] = False
+    return result
+
+
+def _inline_part_data(
+    row: dict[str, Any], message_index: int, part_index: int
+) -> tuple[str, bytes]:
+    try:
+        part = row["messages"][message_index]["content"][part_index]
+    except (IndexError, KeyError, TypeError):
+        raise HTTPException(status_code=404, detail="Attachment not found") from None
+    value: Any = None
+    if isinstance(part, dict):
+        image = part.get("image_url")
+        if isinstance(image, dict):
+            value = image.get("url")
+        elif isinstance(image, str):
+            value = image
+        if not value and isinstance(part.get("file"), dict):
+            value = part["file"].get("url")
+    if (
+        not isinstance(value, str)
+        or not value.startswith("data:")
+        or "," not in value
+    ):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    metadata, encoded = value[5:].split(",", 1)
+    media_type = metadata.split(";", 1)[0] or "application/octet-stream"
+    try:
+        content = (
+            base64.b64decode(encoded, validate=True)
+            if ";base64" in metadata.lower()
+            else unquote_to_bytes(encoded)
+        )
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="Attachment data is invalid") from None
+    return media_type, content
 
 
 def create_admin_router(
@@ -161,7 +246,41 @@ def create_admin_router(
         if not row:
             raise HTTPException(status_code=404, detail="Request not found")
         row["stream_chunks"] = database.list_stream_chunks(request_id)
+        return _operator_request_view(row)
+
+    @application.get("/admin/api/requests/{request_id}/raw")
+    async def admin_api_request_raw(
+        request_id: str, _: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        row = database.get_request(request_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Request not found")
+        row["stream_chunks"] = database.list_stream_chunks(request_id)
+        row["raw_loaded"] = True
         return row
+
+    @application.get(
+        "/admin/api/requests/{request_id}/attachments/{message_index}/{part_index}"
+    )
+    async def admin_api_request_attachment(
+        request_id: str,
+        message_index: int,
+        part_index: int,
+        _: None = Depends(require_admin),
+    ) -> Response:
+        row = database.get_request(request_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Request not found")
+        media_type, content = _inline_part_data(row, message_index, part_index)
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @application.post("/admin/api/requests/{request_id}/claim")
     async def admin_api_claim_request(
@@ -263,10 +382,15 @@ def create_admin_router(
             owner_id=payload.operator_id if payload else None,
         ):
             raise HTTPException(status_code=409, detail="流式回复未能结束，请刷新确认状态")
-        result = database.get_request(request_id)
+        result = database.get_request_state(request_id)
         assert result is not None
-        result["stream_chunks"] = database.list_stream_chunks(request_id)
-        return result
+        return {
+            "id": request_id,
+            "status": result["status"],
+            "answer_source": result.get("answer_source"),
+            "answered_at": result.get("answered_at"),
+            "stream_chunk_count": result["stream_chunk_count"],
+        }
 
     @application.post("/admin/api/requests/{request_id}/answer")
     async def admin_api_answer_request(
@@ -321,9 +445,14 @@ def create_admin_router(
             owner_id=payload.operator_id,
         ):
             raise HTTPException(status_code=409, detail="这个问题已经回答或已经过期")
-        result = database.get_request(request_id)
+        result = database.get_request_state(request_id)
         assert result is not None
-        return result
+        return {
+            "id": request_id,
+            "status": result["status"],
+            "answer_source": result.get("answer_source"),
+            "answered_at": result.get("answered_at"),
+        }
 
     @application.get("/admin/api/quick-replies")
     async def admin_api_quick_replies(

@@ -156,9 +156,16 @@ def test_admin_queue_uses_lightweight_summaries_for_large_context(tmp_path: Path
 
         detail = client.get(f"/admin/api/requests/{request['id']}")
         assert detail.status_code == 200
-        assert detail.json()["messages"][0]["content"] == long_system
+        assert detail.json()["messages"] == [{"role": "user", "content": long_user}]
+        assert detail.json()["raw_loaded"] is False
         assert detail.json()["tools"][0]["function"]["name"] == "inspect_repo"
-        assert detail.headers.get("content-encoding") == "gzip"
+
+        raw = client.get(f"/admin/api/requests/{request['id']}/raw")
+        assert raw.status_code == 200
+        assert raw.json()["messages"][0]["content"] == long_system
+        assert raw.json()["raw_loaded"] is True
+        assert raw.headers.get("content-encoding") == "gzip"
+        assert len(detail.content) < len(raw.content) * 0.6
 
 
 def test_request_summary_extracts_real_prompt_and_classifies_background_work(
@@ -311,7 +318,8 @@ def test_non_stream_request_uses_segmented_admin_composer(tmp_path: Path) -> Non
             f"/admin/api/requests/{request_id}/stream/finish"
         )
         assert finished.status_code == 200
-        assert finished.json()["answer"] == "普通第一段，普通第二段。"
+        assert finished.json()["status"] == "answered"
+        assert finished.json()["stream_chunk_count"] == 2
         assert finished.json()["answer_source"] == "human_stream"
 
         job = client.get(f"/v1/human/jobs/{request_id}", headers=auth).json()
@@ -367,6 +375,15 @@ def test_image_input_and_function_tool_call(tmp_path: Path) -> None:
         detail = client.get(f"/admin/api/requests/{request_id}")
         assert detail.json()["preview"].startswith("请看看这张图")
         assert detail.json()["tools"][0]["function"]["name"] == "save_note"
+        image_url = detail.json()["messages"][0]["content"][1]["image_url"]["url"]
+        assert image_url == f"/admin/api/requests/{request_id}/attachments/0/1"
+        image = client.get(image_url)
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/png"
+        assert image.content == b"\x89PNG\r\n\x1a\n"
+        assert client.get(f"/admin/api/requests/{request_id}/raw").json()[
+            "messages"
+        ][0]["content"][1]["image_url"]["url"].startswith("data:image/png")
 
         answered = client.post(
             f"/admin/requests/{request_id}/answer",
@@ -602,7 +619,8 @@ def test_streaming_completion_waits_for_human_answer(tmp_path: Path) -> None:
             f"/admin/api/requests/{request_id}/stream/finish"
         )
         assert finished.status_code == 200
-        assert finished.json()["answer"] == "第一段，第二段。"
+        assert finished.json()["status"] == "answered"
+        assert finished.json()["stream_chunk_count"] == 2
         assert finished.json()["answer_source"] == "human_stream"
 
         response = future.result(timeout=3)
@@ -1249,8 +1267,8 @@ def test_admin_claim_prevents_duplicate_human_answers(tmp_path: Path) -> None:
             json={"operator_id": operator_b},
         )
         assert finished.status_code == 200
-        assert finished.json()["answer"] == "由 A 回答第一段。"
-        assert finished.json()["claim_active"] is False
+        assert finished.json()["status"] == "answered"
+        assert finished.json()["stream_chunk_count"] == 1
 
 
 def test_stream_chunk_resets_idle_deadline_and_presence(tmp_path: Path) -> None:

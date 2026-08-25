@@ -49,6 +49,10 @@
     claimRenewAt: 0,
     presenceRefreshAt: 0,
     selectedRequestClaimConflict: false,
+    activeClaimRequestId: null,
+    activeClaimPromise: null,
+    detailCache: new Map(),
+    detailPrefetchTimer: null,
   };
   const sectionCopy = {
     cockpit: ["API OPERATIONS", "概览"],
@@ -274,6 +278,38 @@
     }
   }
 
+  function cacheRequestDetail(requestId, promise) {
+    state.detailCache.delete(requestId);
+    state.detailCache.set(requestId, promise);
+    while (state.detailCache.size > 2) {
+      state.detailCache.delete(state.detailCache.keys().next().value);
+    }
+    return promise;
+  }
+
+  function fetchRequestDetail(requestId) {
+    const cached = state.detailCache.get(requestId);
+    if (cached) return cached;
+    const promise = api(`/admin/api/requests/${encodeURIComponent(requestId)}`)
+      .catch((error) => {
+        state.detailCache.delete(requestId);
+        throw error;
+      });
+    return cacheRequestDetail(requestId, promise);
+  }
+
+  function scheduleNextRequestPrefetch(currentId) {
+    clearTimeout(state.detailPrefetchTimer);
+    const index = state.visibleGroups.findIndex((group) =>
+      group.items.some((entry) => entry.id === currentId)
+    );
+    const next = state.visibleGroups[index + 1]?.primary || state.visibleGroups[0]?.primary;
+    if (!next || next.id === currentId || state.detailCache.has(next.id)) return;
+    state.detailPrefetchTimer = setTimeout(() => {
+      fetchRequestDetail(next.id).catch(() => {});
+    }, 180);
+  }
+
   function readDraft(requestId) {
     try { return localStorage.getItem(`iamllm_draft_${requestId}`) || ""; }
     catch { return ""; }
@@ -493,7 +529,9 @@
       releaseClaim(previousClaim);
     }
     const serial = ++state.detailSerial;
+    const summary = state.allRequests.find((item) => item.id === requestId);
     state.selectedRequestId = requestId;
+    state.contextView = "chat";
     state.queueJustCleared = false;
     state.newArrivalIds.delete(requestId);
     const activeGroup = requestGroupFor(requestId);
@@ -501,14 +539,39 @@
     if (updateHash) history.replaceState(null, "", `#inbox/${requestId}`);
     updateNewRequestNotice();
     const detail = $("#request-detail");
-    detail.replaceChildren(make("div", "panel-loading", "正在搬运完整上下文……"));
+    const loading = make("div", "panel-loading request-transition-loading");
+    loading.append(
+      make("span", "loading-pulse", ""),
+      make("strong", "", summary?.preview || "正在打开下一段对话"),
+      make("small", "", "聊天先到，运行记录与原始上下文需要时再加载")
+    );
+    detail.replaceChildren(loading);
+    let claimPromise = null;
     try {
-      let item = await api(`/admin/api/requests/${encodeURIComponent(requestId)}`);
-      if (serial !== state.detailSerial || state.selectedRequestId !== requestId) return;
-      if (item.status === "pending") item = await claimRequest(item);
+      const detailPromise = fetchRequestDetail(requestId);
+      const claimTarget = { id: requestId };
+      claimPromise = summary?.status === "pending"
+        ? claimRequest(claimTarget)
+        : null;
+      state.activeClaimRequestId = claimPromise ? requestId : null;
+      state.activeClaimPromise = claimPromise;
+      let item = await detailPromise;
+      if (summary && item.status !== summary.status) {
+        state.detailCache.delete(requestId);
+        item = await fetchRequestDetail(requestId);
+      }
       if (serial !== state.detailSerial || state.selectedRequestId !== requestId) {
-        if (state.claimedRequestId === requestId) releaseClaim(requestId);
+        if (claimPromise) await claimPromise;
+        if (state.claimedRequestId === requestId) {
+          state.claimedRequestId = null;
+          releaseClaim(requestId);
+        }
         return;
+      }
+      if (item.status === "pending" && !claimPromise) {
+        claimPromise = claimRequest(claimTarget);
+        state.activeClaimRequestId = requestId;
+        state.activeClaimPromise = claimPromise;
       }
       state.selectedRequestStatus = item.status;
       state.selectedRequestDetail = item;
@@ -517,11 +580,37 @@
       }
       renderRequestDetail(item);
       renderRequestList();
+      scheduleNextRequestPrefetch(item.id);
       if (focusComposer && item.status === "pending") {
         setTimeout(() => $("#request-detail textarea[name='answer']")?.focus(), 30);
       }
+      const claimed = claimPromise ? await claimPromise : null;
+      if (serial !== state.detailSerial || state.selectedRequestId !== requestId) {
+        if (state.claimedRequestId === requestId) releaseClaim(requestId);
+        return;
+      }
+      if (claimed) {
+        item = { ...item, ...claimed };
+        state.selectedRequestDetail = item;
+        if (item.claimConflict) {
+          renderRequestDetail(item);
+          renderRequestList();
+        }
+      }
     } catch (error) {
+      if (claimPromise && state.claimedRequestId !== requestId) {
+        await claimPromise.catch(() => null);
+      }
+      if (state.claimedRequestId === requestId) {
+        state.claimedRequestId = null;
+        releaseClaim(requestId);
+      }
       detail.replaceChildren(make("div", "panel-loading", error.message));
+    } finally {
+      if (state.activeClaimRequestId === requestId) {
+        state.activeClaimRequestId = null;
+        state.activeClaimPromise = null;
+      }
     }
   }
 
@@ -849,6 +938,7 @@
         || attachment.url.startsWith("http://")
         || attachment.url.startsWith("https://")
         || attachment.url.startsWith("/uploads/")
+        || attachment.url.startsWith("/admin/api/requests/")
       )
     );
     external.hidden = !previewableUrl;
@@ -1195,15 +1285,34 @@
     return buildChatThread(item);
   }
 
-  function setContextView(view, item) {
+  async function setContextView(view, item) {
     state.contextView = ["chat", "run", "raw"].includes(view) ? view : "chat";
     try { localStorage.setItem("iamllm_context_view", state.contextView); }
     catch { /* View preference is optional. */ }
-    const current = $("#request-detail .context-thread");
-    if (current) current.replaceWith(buildContextThread(item));
     $$("#request-detail [data-context-view]").forEach((button) => {
       button.classList.toggle("active", button.dataset.contextView === state.contextView);
     });
+    if (state.contextView !== "chat" && !item.raw_loaded) {
+      const current = $("#request-detail .context-thread");
+      const loading = make("div", "context-thread context-lazy-loading");
+      loading.append(
+        make("span", "loading-pulse", ""),
+        make("strong", "", state.contextView === "run" ? "正在读取运行记录" : "正在读取完整协议上下文"),
+        make("small", "", "这些技术内容只在你需要时下载，不再拖慢每次切换。")
+      );
+      if (current) current.replaceWith(loading);
+      try {
+        const raw = await api(`/admin/api/requests/${encodeURIComponent(item.id)}/raw`);
+        if (state.selectedRequestId !== item.id) return;
+        item = { ...item, ...raw, raw_loaded: true };
+        state.selectedRequestDetail = item;
+      } catch (error) {
+        loading.replaceChildren(make("div", "panel-loading", error.message));
+        return;
+      }
+    }
+    const current = $("#request-detail .context-thread");
+    if (current) current.replaceWith(buildContextThread(item));
   }
 
   async function finishUtilitySteps(group, button) {
@@ -1682,6 +1791,14 @@
 
     async function advanceQueue() {
       saveDraft(item.id, "");
+      state.detailCache.delete(item.id);
+      const completed = state.allRequests.find((entry) => entry.id === item.id);
+      if (completed) {
+        completed.status = "answered";
+        completed.claim_active = false;
+        completed.claim_owner = null;
+        completed.updated_at = Date.now();
+      }
       state.claimedRequestId = null;
       state.claimRenewAt = 0;
       state.selectedRequestId = null;
@@ -1689,12 +1806,18 @@
       state.requestFilter = "pending";
       state.queueRefreshPending = false;
       state.queueJustCleared = true;
-      history.replaceState(null, "", "#inbox");
       syncRequestFilterButtons();
-      await Promise.all([
-        loadOverview(),
-        loadRequests({ reason: "after-answer", forceDetail: true }),
-      ]);
+      state.requests = state.allRequests.filter((entry) => entry.status === "pending");
+      syncRequestGroups();
+      renderRequestList();
+      const nextId = state.visibleGroups[0]?.primary.id || null;
+      const selection = nextId
+        ? selectRequest(nextId, true, { focusComposer: true, force: true })
+        : Promise.resolve(renderEmptyDetail({ completed: true }));
+      if (!nextId) history.replaceState(null, "", "#inbox");
+      void loadOverview({ silent: true });
+      void loadRequests({ preferredId: nextId, reason: "background" });
+      await selection;
       toast(state.visibleGroups.length
         ? `这个步骤完成了，自动接到下一项。还剩 ${state.visibleGroups.length} 个会话。`
         : "收尾完成，这轮会话清空了。", false);
@@ -1717,6 +1840,15 @@
       state.isSending = true;
       submit.disabled = true;
       try {
+        if (state.activeClaimRequestId === item.id && state.activeClaimPromise) {
+          const claim = await state.activeClaimPromise;
+          if (claim?.claimConflict) {
+            throw new Error("另一张后台页面已经接管，请稍后再试");
+          }
+        }
+        if (state.selectedRequestClaimConflict) {
+          throw new Error("另一张后台页面已经接管，请稍后再试");
+        }
         if (isSegmentedReply && responseType === "text") {
           if (hasText) {
             const chunk = await api(
