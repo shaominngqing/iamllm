@@ -394,6 +394,8 @@ class Database:
             SELECT id, messages_json, tools_json
             FROM human_requests
             WHERE preview = '' OR context_chars = 0 OR request_kind = ''
+               OR preview LIKE '<system-reminder>%'
+               OR preview LIKE 'SessionStart hook additional context:%'
             """
         ).fetchall()
         for row in rows:
@@ -1802,6 +1804,10 @@ class Database:
         )
         if result["request_kind"] == "recap":
             result["preview"] = "生成会话回顾"
+        elif str(result.get("preview") or "").casefold().startswith(
+            ("<system-reminder", "sessionstart hook additional context:")
+        ):
+            result["preview"] = Database._request_preview(result["messages"])
         return result
 
     @staticmethod
@@ -1820,6 +1826,8 @@ class Database:
         )
         if result["request_kind"] == "recap":
             result["preview"] = "生成会话回顾"
+        elif result["request_kind"] == "bootstrap":
+            result["preview"] = "准备 Claude 会话"
         now = _now_ms()
         result["claim_active"] = bool(
             result.get("claim_owner")
@@ -1904,9 +1912,14 @@ class Database:
                 continue
             text = cls._message_text(message)
             if text:
-                if cls._request_kind_from_text(text) == "recap":
+                kind = cls._request_kind_from_text(text)
+                if kind == "recap":
                     return "生成会话回顾"
-                return cls._short_title(cls._clean_user_text(text))
+                if kind == "bootstrap":
+                    return "准备 Claude 会话"
+                cleaned = cls._clean_user_text(text)
+                if cleaned:
+                    return cls._short_title(cleaned)
         for message in reversed(messages):
             text = cls._message_text(message)
             if text:
@@ -1915,7 +1928,9 @@ class Database:
 
     @staticmethod
     def _clean_user_text(value: str) -> str:
-        text = value.strip()
+        text = Database._strip_client_internal_text(value)
+        if not text:
+            return ""
         request_marker = re.search(
             r"^#{1,3}\s*(?:My request|我的请求|用户请求)\s*:\s*$",
             text,
@@ -1930,20 +1945,52 @@ class Database:
             text,
             flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
         ).strip()
-        return text or value.strip()
+        return text
+
+    @staticmethod
+    def _strip_client_internal_text(value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(
+            r"<system-reminder(?:\s[^>]*)?>.*?</system-reminder>",
+            "",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
+        if re.match(
+            r"^SessionStart hook additional context\s*:",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return ""
+        if re.match(
+            r"^The user stepped away and is coming back\.\s*"
+            r"Recap in under \d+ words\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return ""
+        return text
 
     @classmethod
     def _request_kind(cls, messages: list[dict[str, Any]]) -> str:
-        return cls._request_kind_from_text(cls._latest_user_text(messages))
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                return cls._request_kind_from_text(cls._message_text(message))
+        return "conversation"
 
     @staticmethod
     def _request_kind_from_text(value: str) -> str:
-        latest = value.casefold().strip()
+        original = value.strip()
+        latest = original.casefold()
         if re.match(
             r"^the user stepped away and is coming back\.\s*recap in under \d+ words\b",
             latest,
         ):
             return "recap"
+        visible = Database._strip_client_internal_text(original)
+        if not visible and visible != original:
+            return "bootstrap"
+        latest = visible.casefold()
         if "analyze this rollout and produce json" in latest and "raw_memory" in latest:
             return "memory"
         if "generate 0 to 3 hyperpersonalized suggestions" in latest:

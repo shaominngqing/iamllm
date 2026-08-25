@@ -232,6 +232,39 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
         )
         assert memory["request_kind"] == "memory"
 
+        mixed_prompt = app.state.database.create_request(
+            request_id="req_claude_mixed_prompt",
+            model="test-human",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "<system-reminder>SessionStart hook additional "
+                                "context: skill body</system-reminder>"
+                            ),
+                        },
+                        {
+                            "type": "text",
+                            "text": "<system-reminder>Available skills</system-reminder>",
+                        },
+                        {
+                            "type": "text",
+                            "text": "<system-reminder>Project memory</system-reminder>",
+                        },
+                        {"type": "text", "text": "你好"},
+                    ],
+                }
+            ],
+            mode="async",
+            expires_at=int(time.time()) + 3_600,
+            source="anthropic_messages",
+        )
+        assert mixed_prompt["request_kind"] == "conversation"
+        assert mixed_prompt["preview"] == "你好"
+
         recap_prompt = (
             "The user stepped away and is coming back. Recap in under 40 words, "
             "1-2 plain sentences, no markdown. Lead with the overall goal and current task."
@@ -258,6 +291,14 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
                 "WHERE id = 'req_recap'",
                 (recap_prompt,),
             )
+            connection.execute(
+                "UPDATE human_requests SET request_kind = 'conversation', "
+                "preview = '<system-reminder>' "
+                "WHERE id = 'req_claude_mixed_prompt'"
+            )
+
+        with app.state.database._connect() as connection:
+            app.state.database._backfill_request_summaries(connection)
 
         login_admin(client)
         listing = client.get("/admin/api/requests?filter=all").json()["items"]
@@ -278,6 +319,22 @@ def test_request_summary_extracts_real_prompt_and_classifies_background_work(
             {"role": "user", "content": "你好"},
             {"role": "assistant", "content": "你好，有什么可以帮你？"},
         ]
+
+        mixed_detail = client.get(
+            "/admin/api/requests/req_claude_mixed_prompt"
+        ).json()
+        assert mixed_detail["preview"] == "你好"
+        assert mixed_detail["client_internal_count"] == 3
+        assert mixed_detail["messages"] == [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "你好"}],
+            }
+        ]
+        mixed_raw = client.get(
+            "/admin/api/requests/req_claude_mixed_prompt/raw"
+        ).json()
+        assert len(mixed_raw["messages"][0]["content"]) == 4
 
 
 def test_existing_request_rows_backfill_short_summaries(tmp_path: Path) -> None:
@@ -1514,7 +1571,7 @@ def test_managed_api_key_lifecycle_and_protocol_auth(tmp_path: Path) -> None:
         assert dashboard.status_code == 200
         assert "会话工作台" in dashboard.text
         assert "像用户一样阅读聊天" in dashboard.text
-        assert "admin.js?v=20260825g" in dashboard.text
+        assert "admin.js?v=20260825h" in dashboard.text
         assert 'data-panel="keys"' in dashboard.text
         assert 'data-panel="integration"' in dashboard.text
         assert "OPENAI BASE URL" in dashboard.text

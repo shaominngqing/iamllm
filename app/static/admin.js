@@ -167,6 +167,12 @@
       icon: "↻",
       description: "Claude Code 在你离开后请求一段短回顾，帮助恢复会话。它不是用户新发来的问题。",
     },
+    bootstrap: {
+      label: "会话准备",
+      short: "准备",
+      icon: "◌",
+      description: "Claude Code 正在载入 skills、项目规则和运行环境。这不是用户的新问题。",
+    },
   };
 
   function requestKind(item) {
@@ -820,12 +826,53 @@
     return Math.max(0, messages.length - 1);
   }
 
+  function stripClientInternalText(value) {
+    const original = String(value || "");
+    const blocks = original.match(/<system-reminder(?:\s[^>]*)?>[\s\S]*?<\/system-reminder>/gi) || [];
+    let text = original.replace(/<system-reminder(?:\s[^>]*)?>[\s\S]*?<\/system-reminder>/gi, "").trim();
+    let hidden = blocks.length;
+    if (/^SessionStart hook additional context\s*:/i.test(text)
+      || /^The user stepped away and is coming back\.\s*Recap in under \d+ words\b/i.test(text)) {
+      text = "";
+      hidden += 1;
+    }
+    return { text, hidden };
+  }
+
+  function sanitizeClientMessage(message) {
+    if (message?.role !== "user") return { message, hidden: 0 };
+    const content = message.content;
+    if (typeof content === "string") {
+      const cleaned = stripClientInternalText(content);
+      return {
+        hidden: cleaned.hidden,
+        message: cleaned.text || message.tool_calls?.length
+          ? { ...message, content: cleaned.text }
+          : null,
+      };
+    }
+    if (!Array.isArray(content)) return { message, hidden: 0 };
+    let hidden = 0;
+    const visible = [];
+    content.forEach((part) => {
+      if (part?.type !== "text") {
+        visible.push(part);
+        return;
+      }
+      const cleaned = stripClientInternalText(part.text);
+      hidden += cleaned.hidden;
+      if (cleaned.text) visible.push({ ...part, text: cleaned.text });
+    });
+    return {
+      hidden,
+      message: visible.length || message.tool_calls?.length
+        ? { ...message, content: visible }
+        : null,
+    };
+  }
+
   function isClientInternalMessage(message) {
-    if (message?.role !== "user") return false;
-    const text = messagePlainText(message).trim();
-    return /^<system-reminder(?:\s|>)/i.test(text)
-      || /^SessionStart hook additional context\s*:/i.test(text)
-      || /^The user stepped away and is coming back\.\s*Recap in under \d+ words\b/i.test(text);
+    return sanitizeClientMessage(message).hidden > 0;
   }
 
   function fileNameFromPath(value) {
@@ -1102,9 +1149,10 @@
     );
     intro.append(introCopy);
     const internalCount = Number(item.client_internal_count || 0)
-      || (item.messages || []).filter(isClientInternalMessage).length;
+      || (item.messages || []).reduce((total, message) =>
+        total + sanitizeClientMessage(message).hidden, 0);
     if (internalCount) {
-      intro.append(make("span", "context-size-chip", `已隐藏 ${internalCount} 条客户端内部上下文`));
+      intro.append(make("span", "context-size-chip", `已隐藏 ${internalCount} 段客户端内部上下文`));
     }
     thread.append(intro);
 
@@ -1131,9 +1179,10 @@
     }
 
     const conversation = make("section", "operator-chat-transcript");
-    const messages = (item.messages || []).filter((message) =>
-      ["user", "assistant"].includes(message.role)
-      && !isClientInternalMessage(message)
+    const messages = (item.messages || [])
+      .map((message) => sanitizeClientMessage(message).message)
+      .filter((message) => message
+      && ["user", "assistant"].includes(message.role)
       && (messagePlainText(message).trim() || collectMessageAttachments(message).length)
       && !(message.role === "assistant" && message.tool_calls?.length && !messagePlainText(message).trim())
     );

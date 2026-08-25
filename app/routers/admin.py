@@ -43,35 +43,62 @@ def _admin_attachment_url(
     return f"/admin/api/requests/{request_id}/attachments/{message_index}/{part_index}"
 
 
-def _is_client_internal_message(message: dict[str, Any]) -> bool:
-    """Identify hook/runtime context that agent clients encode as user messages."""
+def _strip_client_internal_text(value: str) -> tuple[str, int]:
+    """Remove agent-runtime blocks while preserving user text beside them."""
+    text, count = re.subn(
+        r"<system-reminder(?:\s[^>]*)?>.*?</system-reminder>",
+        "",
+        str(value or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = text.strip()
+    if re.match(
+        r"^SessionStart hook additional context\s*:",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "", count + 1
+    if re.match(
+        r"^The user stepped away and is coming back\.\s*"
+        r"Recap in under \d+ words\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "", count + 1
+    return text, count
+
+
+def _sanitize_client_message(
+    original: dict[str, Any],
+) -> tuple[dict[str, Any] | None, int]:
+    """Return the user-visible portion of a message plus hidden block count."""
+    message = copy.deepcopy(original)
     if message.get("role") != "user":
-        return False
+        return message, 0
     content = message.get("content")
     if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
+        visible, hidden = _strip_client_internal_text(content)
+        message["content"] = visible
+        return (message if visible or message.get("tool_calls") else None), hidden
+    if not isinstance(content, list):
+        return message, 0
+
+    visible_parts: list[Any] = []
+    hidden = 0
+    for original_part in content:
+        if not isinstance(original_part, dict) or original_part.get("type") != "text":
+            visible_parts.append(original_part)
+            continue
+        visible, removed = _strip_client_internal_text(
+            str(original_part.get("text") or "")
         )
-    else:
-        return False
-    return bool(
-        re.match(r"^\s*<system-reminder(?:\s|>)", text, flags=re.IGNORECASE)
-        or re.match(
-            r"^\s*SessionStart hook additional context\s*:",
-            text,
-            flags=re.IGNORECASE,
-        )
-        or re.match(
-            r"^\s*The user stepped away and is coming back\.\s*"
-            r"Recap in under \d+ words\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-    )
+        hidden += removed
+        if visible:
+            part = copy.deepcopy(original_part)
+            part["text"] = visible
+            visible_parts.append(part)
+    message["content"] = visible_parts
+    return (message if visible_parts or message.get("tool_calls") else None), hidden
 
 
 def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -79,17 +106,16 @@ def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     messages: list[dict[str, Any]] = []
     client_internal_count = 0
-    if row.get("request_kind", "conversation") in {"conversation", "recap"}:
+    if row.get("request_kind", "conversation") in {
+        "conversation", "recap", "bootstrap"
+    }:
         for message_index, original in enumerate(row.get("messages") or []):
             if original.get("role") not in {"user", "assistant"}:
                 continue
             if original.get("role") == "assistant" and original.get("tool_calls"):
                 continue
-            if _is_client_internal_message(original):
-                client_internal_count += 1
-                continue
-            message = copy.deepcopy(original)
-            content = message.get("content")
+            prepared = copy.deepcopy(original)
+            content = prepared.get("content")
             if isinstance(content, list):
                 for part_index, part in enumerate(content):
                     if not isinstance(part, dict):
@@ -112,6 +138,10 @@ def _operator_request_view(row: dict[str, Any]) -> dict[str, Any]:
                         file_value["url"] = _admin_attachment_url(
                             str(row["id"]), message_index, part_index
                         )
+            message, hidden = _sanitize_client_message(prepared)
+            client_internal_count += hidden
+            if message is None:
+                continue
             messages.append(message)
     result["messages"] = messages
     result["client_internal_count"] = client_internal_count
