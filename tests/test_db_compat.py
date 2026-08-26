@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.db_compat import translate_sqlite_sql
+from app.db_compat import PostgresConnection, translate_sqlite_sql
 
 
 def test_translate_sqlite_placeholders_and_identity() -> None:
@@ -31,3 +31,35 @@ def test_translate_insert_or_ignore() -> None:
 def test_translate_transaction_and_pragma() -> None:
     assert translate_sqlite_sql("BEGIN IMMEDIATE") == "BEGIN"
     assert translate_sqlite_sql("PRAGMA optimize") == "SELECT 1"
+
+
+def test_postgres_executemany_uses_cursor() -> None:
+    calls: list[tuple[str, list[tuple[str, int]]]] = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def executemany(self, sql, params):
+            calls.append((sql, params))
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    connection = PostgresConnection(FakeConnection())
+    params = [("queue_version", 1)]
+    connection.executemany(
+        "INSERT OR IGNORE INTO app_meta(key, value) VALUES (?, ?)", params
+    )
+
+    assert calls == [
+        (
+            "INSERT INTO app_meta(key, value) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            params,
+        )
+    ]

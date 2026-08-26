@@ -46,7 +46,9 @@ class PostgresConnection:
         return self.raw.execute(translated, params)
 
     def executemany(self, sql: str, params_seq: list[tuple[Any, ...]]):
-        return self.raw.executemany(translate_sqlite_sql(sql), params_seq)
+        # psycopg exposes batch execution on cursors rather than connections.
+        with self.raw.cursor() as cursor:
+            cursor.executemany(translate_sqlite_sql(sql), params_seq)
 
     def executescript(self, script: str) -> None:
         for statement in script.split(";"):
