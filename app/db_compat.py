@@ -11,6 +11,7 @@ from psycopg_pool import ConnectionPool
 _INSERT_OR_IGNORE = re.compile(
     r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", flags=re.IGNORECASE
 )
+_INTEGER_TYPE = re.compile(r"\bINTEGER\b", flags=re.IGNORECASE)
 
 
 def translate_sqlite_sql(sql: str) -> str:
@@ -28,6 +29,9 @@ def translate_sqlite_sql(sql: str) -> str:
     translated = translated.replace(
         "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY"
     )
+    # SQLite INTEGER is signed 64-bit. PostgreSQL INTEGER is only 32-bit,
+    # which cannot hold our millisecond timestamps.
+    translated = _INTEGER_TYPE.sub("BIGINT", translated)
     return translated.replace("?", "%s")
 
 

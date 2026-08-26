@@ -302,6 +302,8 @@ class Database:
                 "request_kind",
                 "TEXT NOT NULL DEFAULT ''",
             )
+            if self.is_postgres:
+                self._upgrade_postgres_integers(connection)
             self._backfill_request_summaries(connection)
             connection.execute(
                 """
@@ -420,6 +422,38 @@ class Database:
         if column not in columns:
             connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
+
+    @staticmethod
+    def _upgrade_postgres_integers(connection: Any) -> None:
+        """Repair schemas created before SQLite INTEGER mapped to BIGINT."""
+
+        tables = {
+            "human_requests",
+            "human_stream_chunks",
+            "conversations",
+            "conversation_messages",
+            "model_profile",
+            "app_meta",
+            "quick_replies",
+            "auto_reply_rules",
+            "api_keys",
+            "api_key_calls",
+        }
+        rows = connection.execute(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND data_type = 'integer'
+            """
+        ).fetchall()
+        for row in rows:
+            table = str(row["table_name"])
+            column = str(row["column_name"])
+            if table not in tables:
+                continue
+            connection.execute(
+                f'ALTER TABLE "{table}" ALTER COLUMN "{column}" TYPE BIGINT'
             )
 
     @classmethod
