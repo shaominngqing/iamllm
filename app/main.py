@@ -47,7 +47,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.response_timeout_seconds < 60
         else f"{max(1, (settings.response_timeout_seconds + 59) // 60)} 分钟"
     )
-    database = Database(settings.database_path, timezone_name=settings.timezone_name)
+    database = Database(
+        settings.database_path,
+        database_url=settings.database_url,
+        timezone_name=settings.timezone_name,
+    )
     notification_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1_000)
     human_requests = HumanRequestService(settings, database, notification_queue)
     api_keys = ApiKeyService(settings, database)
@@ -87,6 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for worker in workers:
                 with suppress(asyncio.CancelledError):
                     await worker
+            database.close()
 
     application = FastAPI(
         title="iamllm",

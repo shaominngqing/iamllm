@@ -40,6 +40,7 @@ class Settings:
     response_timeout_seconds: int
     job_ttl_seconds: int
     cookie_secure: bool
+    database_url: str = ""
     timeout_fallback_text: str = DEFAULT_TIMEOUT_FALLBACK_TEXT
     max_upload_bytes: int = 8 * 1024 * 1024
     poll_interval_seconds: float = 0.4
@@ -56,6 +57,11 @@ class Settings:
     def validate(self) -> None:
         if self.environment not in {"development", "production", "test"}:
             raise ValueError("IAMLLM_ENV must be development, production, or test")
+        if self.database_url and urlparse(self.database_url).scheme not in {
+            "postgres",
+            "postgresql",
+        }:
+            raise ValueError("IAMLLM_DATABASE_URL must be a PostgreSQL connection URL")
         for label, value in {
             "IAMLLM_PUBLIC_BASE_URL": self.public_base_url,
             "IAMLLM_NOTIFICATION_WEBHOOK_URL": self.notification_webhook_url,
@@ -123,6 +129,7 @@ class Settings:
             ),
             job_ttl_seconds=int(os.getenv("IAMLLM_JOB_TTL_SECONDS", "86400")),
             cookie_secure=_as_bool(os.getenv("IAMLLM_COOKIE_SECURE")),
+            database_url=os.getenv("IAMLLM_DATABASE_URL", "").strip(),
             timeout_fallback_text=os.getenv(
                 "IAMLLM_TIMEOUT_FALLBACK_TEXTS",
                 os.getenv(

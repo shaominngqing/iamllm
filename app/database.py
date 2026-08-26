@@ -11,18 +11,41 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.db_compat import PostgresBackend
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
 class Database:
-    def __init__(self, path: Path, *, timezone_name: str = "Asia/Shanghai"):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        database_url: str = "",
+        timezone_name: str = "Asia/Shanghai",
+    ):
         self.path = path
+        self.database_url = database_url
+        self.postgres = PostgresBackend(database_url) if database_url else None
         self.timezone_name = timezone_name
         self.timezone = ZoneInfo(timezone_name)
 
-    def _connect(self) -> sqlite3.Connection:
+    @property
+    def is_postgres(self) -> bool:
+        return self.postgres is not None
+
+    def _locking_select(self, sql: str) -> str:
+        """Lock the selected row on PostgreSQL; SQLite is locked by BEGIN IMMEDIATE."""
+
+        if self.is_postgres:
+            return f"{sql.rstrip()} FOR UPDATE"
+        return sql
+
+    def _connect(self):
+        if self.postgres:
+            return self.postgres.connect()
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
@@ -30,7 +53,10 @@ class Database:
         return connection
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.postgres:
+            self.postgres.open()
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -286,6 +312,10 @@ class Database:
             self._seed_control_center(connection)
             connection.execute("PRAGMA optimize")
 
+    def close(self) -> None:
+        if self.postgres:
+            self.postgres.close()
+
     @staticmethod
     def _seed_control_center(connection: sqlite3.Connection) -> None:
         now = _now_ms()
@@ -377,8 +407,13 @@ class Database:
 
     @staticmethod
     def _ensure_column(
-        connection: sqlite3.Connection, table: str, column: str, definition: str
+        connection: Any, table: str, column: str, definition: str
     ) -> None:
+        if getattr(connection, "dialect", "sqlite") == "postgresql":
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+            )
+            return
         columns = {
             row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
         }
@@ -577,7 +612,10 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)
+                self._locking_select(
+                    "SELECT * FROM api_keys WHERE key_hash = ?"
+                ),
+                (key_hash,),
             ).fetchone()
             if not row or not row["active"] or row["revoked_at"] is not None:
                 return {"status": "invalid"}
@@ -1004,7 +1042,7 @@ class Database:
                 """
                 SELECT * FROM conversation_messages
                 WHERE conversation_id = ?
-                ORDER BY created_at, rowid
+                ORDER BY created_at, id
                 """,
                 (conversation_id,),
             ).fetchall()
@@ -1221,10 +1259,12 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                """
-                SELECT status, claim_owner, claim_expires_at
-                FROM human_requests WHERE id = ?
-                """,
+                self._locking_select(
+                    """
+                    SELECT status, claim_owner, claim_expires_at
+                    FROM human_requests WHERE id = ?
+                    """
+                ),
                 (request_id,),
             ).fetchone()
             if not row or row["status"] != "pending":
@@ -1316,11 +1356,13 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                """
-                SELECT status, stream_requested, stream_chunk_count,
-                       claim_owner, claim_expires_at
-                FROM human_requests WHERE id = ?
-                """,
+                self._locking_select(
+                    """
+                    SELECT status, stream_requested, stream_chunk_count,
+                           claim_owner, claim_expires_at
+                    FROM human_requests WHERE id = ?
+                    """
+                ),
                 (request_id,),
             ).fetchone()
             if (
@@ -1371,7 +1413,10 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM human_requests WHERE id = ?", (request_id,)
+                self._locking_select(
+                    "SELECT * FROM human_requests WHERE id = ?"
+                ),
+                (request_id,),
             ).fetchone()
             if (
                 not row
@@ -1515,7 +1560,10 @@ class Database:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM human_requests WHERE id = ?", (request_id,)
+                self._locking_select(
+                    "SELECT * FROM human_requests WHERE id = ?"
+                ),
+                (request_id,),
             ).fetchone()
             if (
                 not row

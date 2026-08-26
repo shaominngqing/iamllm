@@ -13,6 +13,8 @@ services:
         value: production
       - key: IAMLLM_DATABASE_PATH
         value: /data/iamllm.db
+      - key: IAMLLM_DATABASE_URL
+        sync: false
       - key: IAMLLM_API_KEY
         sync: false
       - key: IAMLLM_ADMIN_USERNAME

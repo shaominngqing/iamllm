@@ -34,7 +34,8 @@
 - `app/errors.py`：OpenAI、Claude、Gemini 各自的错误响应格式
 - `app/protocols.py`：三家协议的输入归一化和最终响应转换
 - `app/repositories/`：真人任务所需的持久化接口，便于后续替换 PostgreSQL
-- `app/database.py`：当前单实例使用的 SQLite 持久化实现
+- `app/database.py`：统一数据访问层；本地默认 SQLite，设置 `IAMLLM_DATABASE_URL` 后使用 PostgreSQL
+- `app/db_compat.py`：PostgreSQL 连接池与当前 SQL 子集的兼容适配
 
 新的协议入口应只负责“解析请求 → 创建统一真人任务 → 格式化响应”，不要把队列、超时或会话逻辑重新写进路由。
 
@@ -301,11 +302,12 @@ curl -X POST http://127.0.0.1:8000/v1/human/conversations \
 
 ## 数据位置
 
-- SQLite 数据库：`data/iamllm.db`
+- 本地默认 SQLite 数据库：`data/iamllm.db`
+- 设置 `IAMLLM_DATABASE_URL` 后：API 密钥、设置、会话和请求历史写入 PostgreSQL，SQLite 路径不再使用
 - 访客上传图片：`data/uploads/`
 - 模型和后台配置：`.env`
 
-这些目录已从 Git 中忽略，但正式部署仍需单独备份数据库和上传文件。
+这些目录已从 Git 中忽略。PostgreSQL 只解决结构化数据持久化；上传文件仍在本地目录，正式部署还需单独备份或迁移到对象存储。
 
 ## 测试
 
@@ -351,12 +353,13 @@ docker compose logs -f app
 
 1. 把代码推送到 GitHub 仓库。
 2. 在 Render 选择 **New → Blueprint**，连接这个仓库。
-3. 创建时填写两个不会写入 Git 的秘密变量：
+3. 创建时填写三个不会写入 Git 的秘密变量：
    - `IAMLLM_API_KEY`：至少 24 个字符，建议用 `sk-` 加随机字符串。
    - `IAMLLM_ADMIN_PASSWORD`：至少 16 个字符。
+   - `IAMLLM_DATABASE_URL`：Supabase/PostgreSQL 连接串。Render 建议使用 Supabase 的 Session pooler URI。
 4. 等待构建完成后访问 `/chat` 和 `/admin`；程序接入地址为 `/v1`。
 
-免费版适合先试玩，不适合保存重要数据：实例闲置后会休眠，重新唤醒通常需要等待；免费服务不能挂载持久磁盘，因此 SQLite 会在重启、休眠恢复或重新部署时丢失，上传的图片也一样。要长期使用当前架构，应升级到可挂载磁盘的付费实例；或者后续把 SQLite 和上传目录分别迁移到托管数据库与对象存储。
+免费实例闲置后仍会休眠，下一次请求可能需要等待冷启动；但使用 `IAMLLM_DATABASE_URL` 后，API 密钥、设置、会话和请求历史保存在托管 PostgreSQL 中，不会再跟着 Render 实例消失。上传图片目前仍写入 Render 临时磁盘，休眠恢复、重启或重新部署后可能丢失，长期使用应迁移到 Supabase Storage 等对象存储。
 
 Render 会通过 `PORT` 环境变量指定监听端口，项目的容器启动器已经自动读取它；本地没有该变量时仍使用 `8000`。
 
@@ -398,4 +401,4 @@ docker compose start app
 - 已在反向代理或云平台配置请求限流和日志轮转
 - 已说明隐私政策、内容保留期限和删除方式
 
-单机内测继续使用 SQLite 即可。只有需要多实例部署时，再迁移到 PostgreSQL 和对象存储。
+本地单机内测继续使用 SQLite 即可；Render 免费部署应使用 PostgreSQL。要让图片和附件也跨重启保存，还需迁移到对象存储。
