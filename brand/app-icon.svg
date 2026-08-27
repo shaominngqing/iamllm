@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">iamllm app icon</title>
+  <desc id="desc">A lowercase i inside a speech bubble with a human pulse line.</desc>
+  <rect width="1024" height="1024" fill="#111A16"/>
+  <g transform="translate(128 128) scale(1.5)">
+    <path fill="#F7F8F3" d="M112 76h288c42 0 76 34 76 76v176c0 42-34 76-76 76H258l-106 72v-72h-40c-42 0-76-34-76-76V152c0-42 34-76 76-76Z"/>
+    <circle cx="256" cy="174" r="30" fill="#111A16"/>
+    <path d="M256 234v70" fill="none" stroke="#111A16" stroke-width="38" stroke-linecap="round"/>
+    <path d="M120 334h82l27-41 42 75 31-56 28 22h62" fill="none" stroke="#B9E83F" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

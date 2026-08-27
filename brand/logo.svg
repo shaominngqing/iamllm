@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" role="img" aria-labelledby="title desc">
+  <title id="title">iamllm</title>
+  <desc id="desc">iamllm logo: I am the language model.</desc>
+  <g transform="translate(16 16) scale(.40625)">
+    <rect width="512" height="512" rx="112" fill="#111A16"/>
+    <path fill="#F7F8F3" d="M112 76h288c42 0 76 34 76 76v176c0 42-34 76-76 76H258l-106 72v-72h-40c-42 0-76-34-76-76V152c0-42 34-76 76-76Z"/>
+    <circle cx="256" cy="174" r="30" fill="#111A16"/>
+    <path d="M256 234v70" fill="none" stroke="#111A16" stroke-width="38" stroke-linecap="round"/>
+    <path d="M120 334h82l27-41 42 75 31-56 28 22h62" fill="none" stroke="#B9E83F" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="258" y="112" fill="#111A16" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="82" font-weight="780" letter-spacing="-4">iamllm</text>
+  <text x="264" y="158" fill="#55705F" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700" letter-spacing="3">I AM THE LANGUAGE MODEL</text>
+</svg>

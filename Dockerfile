@@ -1,25 +1,41 @@
-FROM python:3.12-slim
+FROM node:22-alpine AS web-builder
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /src
+COPY web/package.json web/package-lock.json ./web/
+RUN cd web && npm ci
+COPY web ./web
+COPY internal/webassets ./internal/webassets
+RUN cd web && npm run build
 
-WORKDIR /app
+FROM golang:1.25-alpine AS go-builder
 
-COPY pyproject.toml README.md ./
-COPY app ./app
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+COPY --from=web-builder /src/internal/webassets/dist ./internal/webassets/dist
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/iamllm ./cmd/iamllm
 
-RUN pip install --no-cache-dir . \
-    && useradd --create-home --uid 10001 iamllm \
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates sqlite tzdata \
+    && addgroup -S iamllm \
+    && adduser -S -G iamllm -u 10001 iamllm \
     && mkdir -p /data \
     && chown -R iamllm:iamllm /data
 
+COPY --from=go-builder /out/iamllm /usr/local/bin/iamllm
+
 USER iamllm
+WORKDIR /data
+ENV IAMLLM_BIND_IP=0.0.0.0 \
+    IAMLLM_DATABASE_PATH=/data/iamllm.db
 
 EXPOSE 8000
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.getenv('PORT', '8000')}/health\", timeout=3).read()"]
+  CMD wget -qO- http://127.0.0.1:8000/health >/dev/null || exit 1
 
-CMD ["python", "-m", "app.server"]
+ENTRYPOINT ["iamllm"]

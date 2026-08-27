@@ -2,10 +2,10 @@
 .gitignore
 .env
 .env.production
-.venv
-.pytest_cache
-__pycache__
-*.py[cod]
-*.egg-info
 data
 tests
+artifacts
+web/node_modules
+mobile
+bin
+.idea

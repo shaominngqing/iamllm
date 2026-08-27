@@ -1,15 +1,16 @@
 name: iamllm
 
 services:
-  app:
+  iamllm:
     build:
       context: .
     image: iamllm:local
     restart: unless-stopped
     init: true
     env_file:
-      - ${IAMLLM_ENV_FILE:-.env}
+      - ${IAMLLM_ENV_FILE:-.env.production}
     environment:
+      IAMLLM_BIND_IP: 0.0.0.0
       IAMLLM_DATABASE_PATH: /data/iamllm.db
     ports:
       - "${IAMLLM_BIND_IP:-127.0.0.1}:${IAMLLM_PORT:-8000}:8000"
