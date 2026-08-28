@@ -21,6 +21,8 @@ iamllm 是一个开源、自托管的“真人模型”服务。它把 OpenAI、
 
 它不是模型代理，也不会把问题偷偷转发给另一个 AI。没有命中自动回复时，真正生成答案的人就是你。
 
+> **English:** iamllm turns a human into a standards-compatible LLM endpoint. It is a self-hosted, human-powered API for OpenAI Chat Completions and Responses, Anthropic Messages / Claude Code, OpenCode and Gemini. The Go server, embedded React console, Flutter mobile app and SQLite storage run without an upstream AI provider.
+
 <p align="center">
   <img src="docs/images/how-it-works.svg" width="100%" alt="iamllm 工作流程：客户端发问，iamllm 排队，由自动规则或真人流式回答">
 </p>
