@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 620" role="img" aria-labelledby="title desc">
+  <title id="title">iamllm 工作流程</title>
+  <desc id="desc">客户端通过标准模型协议向 iamllm 发问，自动回复或真人回答后，以流式响应返回客户端。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#102017" flood-opacity=".10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#78917F"/>
+    </marker>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#DDF59B"/>
+      <stop offset="1" stop-color="#B9E83F"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="620" rx="36" fill="#F4F6F2"/>
+  <text x="64" y="74" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="34" font-weight="760">一句话发出去，经过的不是神经网络，是你</text>
+  <text x="64" y="110" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">调用方继续使用标准模型 API；iamllm 负责排队、提醒、等待和协议转换。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="168" width="278" height="330" rx="28" fill="#FFFFFF"/>
+    <rect x="92" y="198" width="52" height="52" rx="14" fill="#111A16"/>
+    <path d="M108 216h20M108 226h13M108 236h17" fill="none" stroke="#B9E83F" stroke-width="4" stroke-linecap="round"/>
+    <text x="92" y="294" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700" letter-spacing="2">01 · CLIENT</text>
+    <text x="92" y="335" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="27" font-weight="740">客户端照常发问</text>
+    <text x="92" y="376" fill="#526158" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Codex · Claude Code</text>
+    <text x="92" y="405" fill="#526158" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">OpenCode · SDK · curl</text>
+    <rect x="92" y="441" width="190" height="34" rx="17" fill="#EFF3ED"/>
+    <text x="110" y="463" fill="#385344" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">POST /v1/…</text>
+  </g>
+
+  <path d="M354 333H450" fill="none" stroke="#78917F" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+  <text x="368" y="312" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700">JSON</text>
+
+  <g filter="url(#shadow)">
+    <rect x="462" y="144" width="356" height="378" rx="30" fill="#111A16"/>
+    <rect x="494" y="176" width="66" height="66" rx="18" fill="url(#accent)"/>
+    <circle cx="527" cy="199" r="7" fill="#111A16"/>
+    <path d="M527 217v15M507 238h13l7-10 10 18 8-13 8 5h12" fill="none" stroke="#111A16" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="494" y="292" fill="#B9E83F" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700" letter-spacing="2">02 · IAMLLM</text>
+    <text x="494" y="335" fill="#FFFFFF" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="29" font-weight="760">协议变成待回答会话</text>
+    <text x="494" y="374" fill="#C7D1CB" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">上下文 · 图片 · 文件 · 工具</text>
+    <g>
+      <rect x="494" y="408" width="138" height="66" rx="18" fill="#1C2A22" stroke="#3D5145"/>
+      <text x="512" y="435" fill="#A9B8AF" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">命中规则</text>
+      <text x="512" y="458" fill="#FFFFFF" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">自动回复</text>
+      <rect x="646" y="408" width="140" height="66" rx="18" fill="#DDF59B"/>
+      <text x="664" y="435" fill="#526738" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">需要判断</text>
+      <text x="664" y="458" fill="#172014" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="760">通知本人</text>
+    </g>
+  </g>
+
+  <path d="M830 333H926" fill="none" stroke="#78917F" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+  <text x="851" y="312" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700">SSE</text>
+
+  <g filter="url(#shadow)">
+    <rect x="938" y="168" width="278" height="330" rx="28" fill="#FFFFFF"/>
+    <circle cx="1000" cy="224" r="28" fill="#DDF59B"/>
+    <path d="M988 225l8 8 17-20" fill="none" stroke="#264431" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="966" y="294" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700" letter-spacing="2">03 · HUMAN</text>
+    <text x="966" y="335" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="27" font-weight="740">你在网页或手机回答</text>
+    <text x="966" y="376" fill="#526158" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">每次 Enter 发出一段</text>
+    <text x="966" y="405" fill="#526158" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">空白 Enter 结束本轮</text>
+    <g transform="translate(966 438)">
+      <rect width="54" height="34" rx="17" fill="#EFF3ED"/><text x="14" y="22" fill="#385344" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">在，</text>
+      <rect x="62" width="74" height="34" rx="17" fill="#EFF3ED"/><text x="74" y="22" fill="#385344" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">但灵魂</text>
+      <rect x="144" width="68" height="34" rx="17" fill="#B9E83F"/><text x="156" y="22" fill="#213019" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">上线。</text>
+    </g>
+  </g>
+
+  <rect x="452" y="562" width="376" height="34" rx="17" fill="#E7EDE4"/>
+  <circle cx="475" cy="579" r="5" fill="#40A86B"/>
+  <text x="490" y="584" fill="#466052" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="650">客户端看到的仍是一条普通的模型回答</text>
+</svg>

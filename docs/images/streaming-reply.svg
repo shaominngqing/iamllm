@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 470" role="img" aria-labelledby="title desc">
+  <title id="title">iamllm 人工流式回答方式</title>
+  <desc id="desc">回答者分三次按 Enter 发出三个 chunk，客户端将它们显示为一条连续的助手消息，最后用空白 Enter 结束。</desc>
+  <defs>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#111A16" flood-opacity=".09"/></filter>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0l10 5-10 5z" fill="#78917F"/></marker>
+  </defs>
+  <rect width="1280" height="470" rx="36" fill="#F4F6F2"/>
+  <text x="64" y="70" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="34" font-weight="760">你在分段回答，用户看到的是一条消息</text>
+  <text x="64" y="106" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">chunk 是传输单位，不是聊天气泡；每段发送后都会立即抵达调用方。</text>
+
+  <g filter="url(#s)">
+    <rect x="64" y="154" width="550" height="246" rx="28" fill="#FFFFFF"/>
+    <text x="94" y="190" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700" letter-spacing="1.6">YOUR CONSOLE</text>
+    <rect x="94" y="215" width="134" height="45" rx="16" fill="#EFF3ED"/><text x="112" y="243" fill="#24382C" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">在，但灵魂</text>
+    <rect x="242" y="215" width="116" height="45" rx="16" fill="#EFF3ED"/><text x="260" y="243" fill="#24382C" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">可能还要</text>
+    <rect x="372" y="215" width="116" height="45" rx="16" fill="#DDF59B"/><text x="390" y="243" fill="#24382C" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">几分钟。</text>
+    <text x="94" y="290" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14">Enter</text>
+    <text x="242" y="290" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14">Enter</text>
+    <text x="372" y="290" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14">Enter</text>
+    <rect x="94" y="320" width="458" height="50" rx="16" fill="#111A16"/>
+    <text x="116" y="351" fill="#FFFFFF" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15">输入框为空时再次按 Enter</text>
+    <rect x="433" y="329" width="102" height="32" rx="14" fill="#B9E83F"/><text x="453" y="350" fill="#1E2B20" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="760">结束回答</text>
+  </g>
+
+  <path d="M633 277H732" fill="none" stroke="#78917F" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#a)"/>
+  <text x="655" y="257" fill="#607267" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700">3 CHUNKS</text>
+
+  <g filter="url(#s)">
+    <rect x="746" y="154" width="470" height="246" rx="28" fill="#111A16"/>
+    <text x="778" y="190" fill="#B9E83F" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700" letter-spacing="1.6">CLIENT VIEW</text>
+    <rect x="778" y="218" width="354" height="106" rx="23" fill="#F7F8F3"/>
+    <text x="802" y="249" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">ASSISTANT</text>
+    <text x="802" y="287" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="23" font-weight="650">在，但灵魂可能还要几分钟。</text>
+    <circle cx="799" cy="358" r="6" fill="#B9E83F"/>
+    <text x="816" y="364" fill="#C7D1CB" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15">finish_reason: stop</text>
+  </g>
+</svg>
