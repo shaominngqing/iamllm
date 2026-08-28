@@ -1,37 +1,39 @@
-# 安全策略
+# Security policy
 
-iamllm 会保存模型请求、人工回答、附件元数据、管理员设备和访问凭据哈希。部署者应把它视为包含私密会话的生产服务，而不是普通静态网站。
+[English](SECURITY.md) · [简体中文](SECURITY.zh-CN.md)
 
-## 报告安全问题
+iamllm stores model requests, human replies, attachment metadata, administrator devices, and credential hashes. Treat a deployment as a production service containing private conversations, not as a static website.
 
-请通过仓库维护者提供的私密联系方式报告漏洞。不要在公开 Issue 中附带：
+## Reporting a vulnerability
 
-- 可用的 API Key、管理员 token、密码或 session secret；
-- 完整数据库、备份、日志或 `.env` 文件；
-- 私密会话、系统提示、文件正文或设备 refresh token；
-- 能直接定位仍未修复实例的攻击步骤。
+Use a private contact method provided by the repository maintainer. Do not include any of the following in a public issue:
 
-报告中可以包含脱敏后的版本、部署方式、受影响端点、复现条件、影响和建议修复。维护者确认并完成修复后，再协调公开披露。
+- working API keys, administrator tokens, passwords, or session secrets;
+- complete databases, backups, logs, or `.env` files;
+- private conversations, system prompts, file contents, or device refresh tokens;
+- instructions that directly expose an unpatched instance.
 
-## 部署者最低要求
+A report may include a redacted version, deployment method, affected endpoint, reproduction conditions, impact, and suggested fix. Coordinate public disclosure after the maintainer confirms and fixes the issue.
 
-- 公网实例使用 HTTPS，并只让反向代理访问服务的 `127.0.0.1:8000`；
-- 环境总钥匙只留给所有者，对外发放可限额、可撤销的托管 Key；
-- `.env.production` 权限设为 `600`，不提交到 Git、镜像或聊天；
-- 定期备份 SQLite，并像保护会话正文一样保护备份；
-- 丢失手机或电脑后撤销对应后台设备；
-- 更新依赖和 iamllm 前先备份，更新后检查健康状态与登录；
-- 不把原始上下文、附件或通知 webhook 发送到不可信第三方。
+## Minimum deployment requirements
 
-## 凭据存储边界
+- Use HTTPS publicly and let only the local reverse proxy reach `127.0.0.1:8000`.
+- Keep the environment owner key private; issue limited, revocable managed keys to callers.
+- Set `.env.production` permissions to `600` and never put it in Git, a container image, or chat.
+- Back up SQLite regularly and protect backups like conversation content.
+- Revoke an administrator device after a phone or computer is lost.
+- Back up before updating dependencies or iamllm, then verify health and login afterward.
+- Do not send raw context, attachments, or notification payloads to untrusted third parties.
 
-- 托管 API Key 和设备 refresh token 在数据库中保存 HMAC 哈希；
-- 完整托管 Key 只在创建时展示一次，服务端不能恢复明文；
-- 环境总钥匙、管理员 token、管理员密码和 session secret 来自部署环境，仍由部署者负责保密；
-- SQLite 备份包含会话和配置，即使没有 Key 明文也属于敏感文件。
+## Credential storage
 
-## 支持范围
+- Managed API keys and device refresh tokens are stored as HMAC hashes.
+- A managed key is shown in full only once; the server cannot recover it later.
+- The deployment environment remains responsible for the owner key, administrator token, administrator password, and session secret.
+- SQLite backups contain conversations and configuration and remain sensitive even without plaintext keys.
 
-项目只支持当前主分支和最新正式发布版本。已经公开修复的旧版本不保证继续提供安全补丁。
+## Support scope
 
-iamllm 当前设计为单实例。多个进程共享同一个 SQLite 数据库、把数据库放在不可靠网络文件系统，或绕过反向代理直接暴露管理端口，都不属于受支持的安全部署方式。
+Security support covers the current main branch and latest stable release. Older releases with publicly available fixes are not guaranteed to receive backports.
+
+iamllm is currently a single-instance design. Multiple processes sharing one SQLite database, unreliable network filesystems, and direct exposure of the administration port are unsupported deployment modes.

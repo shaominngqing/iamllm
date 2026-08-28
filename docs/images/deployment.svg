@@ -12,7 +12,7 @@
   <g filter="url(#s)">
     <rect x="64" y="160" width="230" height="154" rx="25" fill="#FFFFFF"/>
     <text x="92" y="196" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700" letter-spacing="1.6">MODEL CLIENTS</text>
-    <text x="92" y="234" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22" font-weight="740">Codex · Claude Code</text>
+    <text x="92" y="234" fill="#111A16" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19" font-weight="740">Codex · Claude Code</text>
     <text x="92" y="268" fill="#526158" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">OpenCode · SDK · curl</text>
     <rect x="92" y="282" width="115" height="24" rx="12" fill="#EFF3ED"/><text x="107" y="299" fill="#385344" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">标准模型 API</text>
   </g>
@@ -36,7 +36,7 @@
     <text x="472" y="358" fill="#B9C6BE" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15">TLS · SSE 不缓冲</text>
   </g>
   <path d="M653 289H738" fill="none" stroke="#78917F" stroke-width="3" marker-end="url(#a)"/>
-  <text x="673" y="270" fill="#607267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">127.0.0.1:8000</text>
+  <text x="660" y="270" fill="#607267" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="700">127.0.0.1:8000</text>
 
   <g filter="url(#s)">
     <rect x="751" y="145" width="283" height="288" rx="30" fill="#FFFFFF"/>

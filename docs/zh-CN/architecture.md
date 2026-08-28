@@ -1,5 +1,7 @@
 # 架构
 
+[English](../en/architecture.md) · [简体中文](architecture.md)
+
 iamllm 是单服务、客户端分离的自托管应用。Go 服务拥有全部业务状态；React 和 Flutter 只通过版本化 HTTP 契约访问它。
 
 ```text

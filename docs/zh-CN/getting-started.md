@@ -1,8 +1,10 @@
 # 自托管入门
 
+[English](../en/getting-started.md) · [简体中文](getting-started.md)
+
 这份教程把一台空白 Linux 服务器变成可通过 HTTPS 调用的 iamllm 实例。默认方案只使用 Docker、Caddy 和 SQLite，不需要 Supabase、Redis、PostgreSQL 或 Python。
 
-![iamllm 单机部署结构](images/deployment.svg)
+![iamllm 单机部署结构](../images/deployment.svg)
 
 图中所有服务都可以放在同一台机器：Caddy 负责 HTTPS 和即时转发 SSE，iamllm 负责协议、队列和后台，SQLite 数据保存在 Docker 卷中。
 
@@ -99,7 +101,7 @@ IAMLLM_BIND_IP=0.0.0.0 docker compose up -d
 
 ## 5. 配置 HTTPS
 
-安装 Caddy 后，把 [Caddyfile 示例](../deploy/Caddyfile.example) 复制到 Caddy 配置目录，并把域名改成自己的：
+安装 Caddy 后，把 [Caddyfile 示例](../../deploy/Caddyfile.example) 复制到 Caddy 配置目录，并把域名改成自己的：
 
 ```caddyfile
 llm.example.com {
@@ -145,7 +147,7 @@ location / {
 
 完整托管 Key 只展示一次。丢失后不要尝试从数据库找回，直接撤销并生成新钥匙。
 
-![iamllm 会话工作台](images/console-inbox.jpg)
+![iamllm 真实会话工作台](../images/web-inbox.jpg)
 
 初次启动时队列为空是正常状态。保持页面打开并不影响 API；新请求到达后，左侧列表会自动更新。
 
@@ -175,7 +177,7 @@ curl "$IAMLLM_URL/v1/chat/completions" \
 
 命令会等待后台人工回答。要观察每一段输出，加入 `-N` 并在 JSON 中设置 `"stream": true`。
 
-![iamllm Playground](images/playground.jpg)
+![iamllm 真实 Playground](../images/web-playground.jpg)
 
 如果不想先写 curl，可以直接打开 `/playground`。它使用当前服务的模型和管理员会话，适合验证“发问 → 进入队列 → 人工回答 → 流式返回”整个链路。
 

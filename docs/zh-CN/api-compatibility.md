@@ -1,5 +1,7 @@
 # API 兼容性
 
+[English](../en/api-compatibility.md) · [简体中文](api-compatibility.md)
+
 iamllm 实现的是客户端接入所需的协议子集，不声称复制各厂商云端模型的全部行为。机器可读契约以当前实例的 `/openapi.json` 为准；面向具体客户端的可复制配置见 [客户端接入教程](client-integration.md)。
 
 ## OpenAI

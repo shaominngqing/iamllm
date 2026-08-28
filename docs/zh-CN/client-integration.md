@@ -1,5 +1,7 @@
 # 客户端接入教程
 
+[English](../en/client-integration.md) · [简体中文](client-integration.md)
+
 iamllm 的目标是让调用方把它当作普通模型服务。通常只需要三项信息：
 
 ```text
@@ -30,7 +32,7 @@ curl "$IAMLLM_URL/v1/models" \
 | Claude Code / Anthropic SDK | `https://llm.example.com` |
 | Gemini REST | `https://llm.example.com` |
 
-![iamllm 网页接入指南](images/console-connect.jpg)
+![iamllm 真实网页接入指南](../images/web-connect.jpg)
 
 部署后的“接入指南”会用实例真实地址展示三类 Base URL，并给出可复制的 curl。教程中的 `llm.example.com` 只是占位符。
 
@@ -96,7 +98,7 @@ for await (const event of stream) {
 }
 ```
 
-![人工流式回答](images/streaming-reply.svg)
+![人工流式回答](../images/streaming-reply.svg)
 
 回答者可以连续发送多个 chunk，但它们在协议和聊天语义上仍属于同一条助手消息。空白 Enter 只在已经发出至少一个 chunk 后代表结束。
 

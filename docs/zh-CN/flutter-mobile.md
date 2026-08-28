@@ -1,5 +1,14 @@
 # Flutter 手机管理端
 
+[English](../en/flutter-mobile.md) · [简体中文](flutter-mobile.md)
+
+<p align="center">
+  <img src="../images/mobile-inbox.png" width="23%" alt="真实 Flutter 会话列表">
+  <img src="../images/mobile-conversation.png" width="23%" alt="真实 Flutter 回答页面">
+  <img src="../images/mobile-automation.png" width="23%" alt="真实 Flutter 自动回复">
+  <img src="../images/mobile-keys.png" width="23%" alt="真实 Flutter API 密钥">
+</p>
+
 `mobile/` 是可运行的 Flutter iOS/Android 工程，定位是“随时接管真人模型”，不是把桌面控制台所有低频设置塞进手机。
 
 已实现：

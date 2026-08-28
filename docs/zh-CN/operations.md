@@ -1,8 +1,10 @@
 # 运维手册
 
+[English](../en/operations.md) · [简体中文](operations.md)
+
 iamllm 默认是单实例 Go 服务加 SQLite。运维目标不是搭建复杂集群，而是把四件事做好：HTTPS、持久化、备份和秘密值管理。
 
-![iamllm 单机部署结构](images/deployment.svg)
+![iamllm 单机部署结构](../images/deployment.svg)
 
 ## 健康检查与日志
 
