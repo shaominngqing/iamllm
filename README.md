@@ -19,15 +19,10 @@
   <a href="docs/zh-CN/architecture.md">架构</a>
 </p>
 
-<p align="center">
-  <a href="docs/media/iamllm-intro-zh.mp4">
-    <img src="docs/images/iamllm-intro-cover.png" width="100%" alt="iamllm 中文项目介绍视频：地表最强大模型，正式发布">
-  </a>
-</p>
+https://github.com/user-attachments/assets/e94ea0dc-d942-45f5-82d4-bab3797163e7
 
 <p align="center">
-  <a href="docs/media/iamllm-intro-zh.mp4">▶ 观看 56 秒项目介绍</a><br>
-  <sub>含中文解说，无背景音乐；点击封面即可播放或下载。</sub>
+  <sub>56 秒中文项目介绍 · 含解说，无背景音乐</sub>
 </p>
 
 # iamllm
