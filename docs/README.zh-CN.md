@@ -12,4 +12,4 @@
 | [Flutter 手机管理端](zh-CN/flutter-mobile.md) | 运行、配对和发布移动管理端 |
 | [产品路线](zh-CN/roadmap.md) | 当前产品基线与后续方向 |
 
-产品介绍和真实截图见仓库的[中文 README](../README.zh-CN.md)。
+产品介绍、演示视频和真实截图见仓库的[中文 README](../README.md)。
